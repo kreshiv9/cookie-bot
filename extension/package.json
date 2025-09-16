@@ -1,0 +1,14 @@
+{
+    "name": "policy-analyzer-extension",
+    "version": "0.0.1",
+    "private": true,
+    "type": "module",
+    "scripts": {
+      "build": "shx rm -rf dist && tsc -p . && shx mkdir -p dist && shx cp -r public/* dist/ && shx mkdir -p dist/popup && shx cp src/popup/index.html dist/popup/index.html && shx mkdir -p dist/content && shx cp src/content/content.js dist/content/content.js",
+      "watch": "tsc -p . -w"
+    },
+    "devDependencies": {
+      "shx": "^0.3.4",
+      "typescript": "^5.6.3"
+    }
+  }

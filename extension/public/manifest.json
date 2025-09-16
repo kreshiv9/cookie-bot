@@ -1,0 +1,17 @@
+{
+    "manifest_version": 3,
+    "name": "Policy Analyzer",
+    "version": "0.0.1",
+    "description": "Analyze a site's Privacy/Cookie policy and current cookies. Shows quotes and advice.",
+    "action": { "default_popup": "popup/index.html" },
+    "permissions": ["cookies", "activeTab", "scripting", "storage"],
+    "host_permissions": ["<all_urls>"],
+    "background": { "service_worker": "worker/background.js", "type": "module" },
+    "content_scripts": [
+      {
+        "matches": ["<all_urls>"],
+        "js": ["content/content.js"],
+        "run_at": "document_end"
+      }
+    ]
+  }

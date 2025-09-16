@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Policy Analyzer</title>
+  <style>
+    body { font: 14px system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin:0; padding:12px; width:360px;}
+    header { display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;}
+    button { cursor:pointer; padding:6px 10px; border-radius:8px; border:1px solid #ddd; background:#fff;}
+    .section { margin:10px 0; }
+    .quote { font-size:12px; background:#f7f7f8; border:1px solid #eee; padding:6px; border-radius:6px; }
+    .badge { display:inline-block; padding:2px 6px; border-radius:6px; background:#eef; margin-right:6px; font-size:12px;}
+    .small { color:#666; font-size:12px; }
+    ul { padding-left:18px; }
+  </style>
+</head>
+<body>
+  <header>
+    <strong id="domain">Policy Analyzer</strong>
+    <button id="analyzeBtn">Analyze</button>
+  </header>
+
+  <div id="status" class="small">Ready.</div>
+
+  <div class="section">
+    <div><strong>Policy links</strong></div>
+    <div id="policyLinks" class="small">—</div>
+  </div>
+
+  <div class="section">
+    <div><strong>Retention</strong></div>
+    <ul id="retentionList"></ul>
+  </div>
+
+  <div class="section">
+    <div><strong>Rights & Contact</strong></div>
+    <div id="rightsContact" class="small">—</div>
+  </div>
+
+  <div class="section">
+    <div><strong>Cookies snapshot</strong></div>
+    <div id="cookies" class="small">—</div>
+  </div>
+
+  <div class="section">
+    <div><strong>Missing</strong></div>
+    <ul id="missingList"></ul>
+  </div>
+
+  <script type="module" src="./popup.js"></script>
+</body>
+</html>
