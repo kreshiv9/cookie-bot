@@ -1,0 +1,43 @@
+{
+    "Extraction": {
+      "siteUrl": "string",
+      "siteType": "retail|news|saas|finance_health|gov_ngo|null",
+      "durations": {
+        "ads_days": [ "number" ],
+        "analytics_days": [ "number" ],
+        "outliers_days": [ "number" ]
+      },
+      "third_parties": { "count": "number", "examples": [ "string" ] },
+      "consent": {
+        "has_category_choices": "boolean",
+        "reject_non_essential": "yes|no|unclear",
+        "cmp_name": "string|null"
+      },
+      "disclosures": {
+        "rights_listed": "boolean",
+        "contact_present": "boolean",
+        "pd_retention_present": "boolean",
+        "last_updated_present": "boolean"
+      },
+      "readability_hint": "plain|moderate|legalese",
+      "quotes": [
+        { "text": "string", "source": "cookie_table|privacy_policy", "url": "string" }
+      ]
+    },
+    "AiInput": {
+      "siteType": "string|null",
+      "clarity_rule_score": "number",
+      "safety_rule_score": "number",
+      "extraction": "Extraction",
+      "baselines": "object"
+    },
+    "AiOutput": {
+      "bullets": [ "string" ],
+      "advice": "string",
+      "optional_adjustments": {
+        "clarity_delta": "number",
+        "safety_delta": "number",
+        "reasons": [ "string" ]
+      }
+    }
+  }

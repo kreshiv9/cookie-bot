@@ -2,9 +2,9 @@ import type {
     AnalyzeResult, CookieItem, PolicyBundle, CookieTableRow, RetentionItem,
     ConsentSignals, ThirdPartySignals, ScoreResult, Summary, RiskLevel
   } from '../types/contracts.js';
-  
+
   // -- utils ----------------------------------------------------
-  
+
   async function ensureContentScript(tabId: number) {
     try {
       await chrome.scripting.executeScript({ target: { tabId }, files: ['content/content.js'] });
@@ -19,19 +19,32 @@ import type {
       });
     });
   }
-  function filterSameOrigin(urls: string[], pageUrl: string): string[] {
-    const pageOrigin = new URL(pageUrl).origin;
+
+  // Approximate site root (eTLD+1-ish). Good enough for cross-subdomain matching.
+  function approxSiteRoot(hostname: string): string {
+    const parts = hostname.split('.').filter(Boolean);
+    if (parts.length <= 2) return hostname.toLowerCase();
+    // crude handling for common ccTLDs like co.in — keep last 3 if second-last is 2 letters
+    const last = parts[parts.length - 1];
+    const prev = parts[parts.length - 2];
+    if (prev.length <= 3) return parts.slice(-3).join('.').toLowerCase();
+    return parts.slice(-2).join('.').toLowerCase();
+  }
+
+  // Filter to same-site (eTLD+1), not same-origin
+  function filterSameSite(urls: string[], pageUrl: string): string[] {
+    const siteRoot = approxSiteRoot(new URL(pageUrl).hostname);
     return Array.from(new Set(urls)).filter(u => {
-      try { return new URL(u).origin === pageOrigin; } catch { return false; }
+      try {
+        const root = approxSiteRoot(new URL(u).hostname);
+        return root === siteRoot;
+      } catch {
+        return false;
+      }
     });
   }
-  function approxSiteRoot(hostname: string): string {
-    // naive eTLD+1-ish for common cases (not perfect on co.in etc.)
-    const parts = hostname.split('.').filter(Boolean);
-    if (parts.length <= 2) return hostname;
-    return parts.slice(-2).join('.');
-  }
-  function toDays(text?: string | null): number | null {
+
+  function toDays(text: string | null): number | null {
     if (!text) return null;
     const s = text.toLowerCase();
     if (s.includes('session')) return 0;
@@ -43,8 +56,40 @@ import type {
     const factor = unit === 'day' ? 1 : unit === 'week' ? 7 : unit === 'month' ? 30 : 365;
     return n * factor;
   }
-  function cap(n: number, min: number, max: number): number {
-    return Math.max(min, Math.min(max, n));
+
+  function maxDaysFromRow(lifespanText?: string | null, rawRow?: string | null): number {
+    const texts = [lifespanText || '', rawRow || ''].join(' | ');
+    const matches = Array.from(texts.matchAll(/(\d+)\s*(day|week|month|year)s?/gi));
+    if (!matches.length) {
+      if (/session|few seconds/i.test(texts)) return 0;
+      return 0;
+    }
+    return matches.reduce((mx, m) => {
+      const d = toDays(m[0]) ?? 0;
+      return Math.max(mx, d);
+    }, 0);
+  }
+
+  // Vendor/name hints (small curated lists)
+  const analyticsHints = [
+    'analytics', 'google analytics', '_ga', '_gid', '_gat', 'gtm', 'gtag', 'rt', 'optimizely', 'segment', 'adobe analytics'
+  ];
+  const adsHints = [
+    'ad', 'advert', 'marketing', 'doubleclick', 'criteo', 'adnxs', '_fbp', 'tiktok', 'tt_', 'gcl', 'taboola', 'outbrain', 'trade desk', 'quantcast'
+  ];
+
+  function containsAny(hay: string, needles: string[]): boolean {
+    const s = hay.toLowerCase();
+    return needles.some(n => s.includes(n));
+  }
+
+  function isAnalyticsRow(row: { category?: string | null; cookie_name?: string | null; raw_row_text?: string | null }): boolean {
+    const blob = ((row.category || '') + ' ' + (row.cookie_name || '') + ' ' + (row.raw_row_text || '')).toLowerCase();
+    return /analytics|performance/.test(row.category || '') || containsAny(blob, analyticsHints);
+  }
+  function isAdsRow(row: { category?: string | null; cookie_name?: string | null; raw_row_text?: string | null }): boolean {
+    const blob = ((row.category || '') + ' ' + (row.cookie_name || '') + ' ' + (row.raw_row_text || '')).toLowerCase();
+    return /target|advert|ads|marketing/.test(row.category || '') || containsAny(blob, adsHints);
   }
   
   // -- content bridge -------------------------------------------
@@ -102,8 +147,8 @@ import type {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     const tabId = tab?.id ?? -1;
   
-    // 1) same-origin URLs or current page
-    let urls = policy.urls.length ? filterSameOrigin(policy.urls, pageUrl) : [];
+    // 1) same-site URLs or current page
+    let urls = policy.urls.length ? filterSameSite(policy.urls, pageUrl) : [];
     if (urls.length === 0) urls = [pageUrl];
   
     // 2) text (fetch or rendered)
@@ -157,18 +202,29 @@ import type {
       }
     }
   
-    // 5) consent signals (keywords in text)
+    // 5) consent signals
     const textLc = text.toLowerCase();
+    const cmpName =
+      /onetrust|optanon/i.test(text) ? 'OneTrust' :
+      /trustarc/i.test(text) ? 'TrustArc' :
+      /cookiebot/i.test(text) ? 'Cookiebot' :
+      /quantcast/i.test(text) ? 'Quantcast' : null;
+
+    const granular_controls =
+      /\b(preferences|manage (cookie|cookies)|granular|category|settings)\b/i.test(text);
+
+    let reject_all_available: boolean | 'unclear' =
+      /\breject all\b/i.test(text) || /\bdecline\b/i.test(text) ? true : false;
+
+    // If a CMP is present but we didn't find explicit copy for reject-all, mark as 'unclear'
+    if (cmpName && reject_all_available === false) {
+      reject_all_available = 'unclear';
+    }
+
     const consent: ConsentSignals = {
-      granular_controls:
-        /\b(preferences|manage (cookie|cookies)|granular|category|settings)\b/.test(textLc),
-      reject_all_available:
-        /\breject all\b/.test(textLc) || /\bdecline\b/.test(textLc),
-      cmp_name:
-        /onetrust|optanon/i.test(text) ? 'OneTrust' :
-        /trustarc/i.test(text) ? 'TrustArc' :
-        /cookiebot/i.test(text) ? 'Cookiebot' :
-        /quantcast/i.test(text) ? 'Quantcast' : null
+      granular_controls,
+      reject_all_available,
+      cmp_name: cmpName
     };
   
     // 6) third-party trackers (from table domains vs site)
@@ -212,12 +268,12 @@ import type {
   let points = 0;
   const reasons: string[] = [];
 
-  // a) cookie lifespan profile (ads/targeting)
-  const targetingRows = tableRows.filter(r =>
-    /target|advert|ads|marketing/i.test(r.category || '') ||
-    /fbp|criteo|doubleclick|adnxs|tt_|gcl|_fbp/i.test((r.cookie_name || '') + (r.raw_row_text || ''))
-  );
-  const maxTargetDays = targetingRows.reduce((mx, r) => Math.max(mx, toDays(r.lifespan_text || r.raw_row_text) ?? 0), 0);
+  // Accurate max durations by category using row-level max
+  const analyticsRows = tableRows.filter(isAnalyticsRow);
+  const targetingRows = tableRows.filter(isAdsRow);
+
+  const maxAnalytics = analyticsRows.reduce((mx, r) => Math.max(mx, maxDaysFromRow(r.lifespan_text, r.raw_row_text)), 0);
+  const maxTargetDays = targetingRows.reduce((mx, r) => Math.max(mx, maxDaysFromRow(r.lifespan_text, r.raw_row_text)), 0);
   if (maxTargetDays > 730) { points += 3; reasons.push(`Very long ads cookies (~${maxTargetDays} days).`); }
   else if (maxTargetDays > 400) { points += 2; reasons.push(`Long ads cookies (~${maxTargetDays} days).`); }
 
@@ -251,10 +307,6 @@ import type {
     if (days <= 730) return `long (~${days}d)`;
     return `very long (~${days}d)`;
   }
-
-  const maxAnalytics = tableRows
-    .filter(r => /analytics|performance|ga|_ga|gid|gtm/i.test((r.category || '') + (r.cookie_name || '') + (r.raw_row_text || '')))
-    .reduce((mx, r) => Math.max(mx, toDays(r.lifespan_text || r.raw_row_text) ?? 0), 0);
 
   const tp = third_parties.count;
   const tpLabel =

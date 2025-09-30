@@ -1,0 +1,75 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model Site {
+  id         String   @id @default(uuid())
+  domain     String   @unique
+  category   String?  // retail|news|saas|finance_health|gov_ngo|null
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  policies   Policy[]
+  analyses   Analysis[]
+}
+
+model Policy {
+  id           String      @id @default(uuid())
+  site         Site        @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  siteId       String
+  url          String
+  lang         String?
+  rawTextHash  String
+  createdAt    DateTime    @default(now())
+  extraction   Extraction?
+  analyses     Analysis[]
+}
+
+model Extraction {
+  id                   String   @id @default(uuid())
+  policy               Policy   @relation(fields: [policyId], references: [id], onDelete: Cascade)
+  policyId             String
+  extractionJson       Json
+  adsP75Days           Int
+  analyticsP75Days     Int
+  thirdPartiesCount    Int
+  hasChoices           Boolean
+  rejectNonEssential   String   // 'yes' | 'no' | 'unclear'
+  rightsListed         Boolean
+  contactPresent       Boolean
+  pdRetentionPresent   Boolean
+  lastUpdatedPresent   Boolean
+  readabilityHint      String   // 'plain' | 'moderate' | 'legalese'
+  createdAt            DateTime @default(now())
+}
+
+model Analysis {
+  id                 String   @id @default(uuid())
+  site               Site     @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  siteId             String
+  policy             Policy   @relation(fields: [policyId], references: [id], onDelete: Cascade)
+  policyId           String
+  clarityScoreRule   Int
+  safetyScoreRule    Int
+  clarityScoreFinal  Int
+  safetyScoreFinal   Int
+  verdict            String   // 'LIKELY_OK' | 'CAUTION' | 'HIGH_RISK'
+  aiProvider         String?  // 'groq' | 'gemini'
+  aiVersion          String?
+  aiOutput           Json?
+  createdAt          DateTime @default(now())
+}
+
+model Baseline {
+  id               String   @id @default(uuid())
+  siteCategory     String   // retail|news|saas|finance_health|gov_ngo
+  adsP75Days       Int
+  analyticsP75Days Int
+  thirdPartyBands  Json     // { few: int, some: int, many: int }
+  notes            String?
+  updatedAt        DateTime @updatedAt
+}

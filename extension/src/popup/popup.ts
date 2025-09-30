@@ -79,9 +79,13 @@ function render(data: AnalyzeResult) {
   bits.push(c.granular_controls
     ? 'You can choose which cookies to allow: Yes'
     : 'You can choose which cookies to allow: No');
-  bits.push(c.reject_all_available
-    ? '“Reject non-essential” button: Yes'
-    : '“Reject non-essential” button: No');
+  bits.push(
+    c.reject_all_available === true
+      ? '“Reject non-essential” button: Yes'
+      : c.reject_all_available === 'unclear'
+        ? '“Reject non-essential” button: Unclear'
+        : '“Reject non-essential” button: No'
+  );
   if (c.cmp_name) bits.push(`Consent manager: ${c.cmp_name}`);
 
   rcEl.textContent = bits.join(' • ');
