@@ -1,4 +1,5 @@
 type AnalyzeResult = import('../types/contracts').AnalyzeResult;
+import { API_BASE_URL } from '../config.js';
 
 function tabsQuery(q: chrome.tabs.QueryInfo): Promise<chrome.tabs.Tab[]> {
   return new Promise(res => chrome.tabs.query(q, res));
@@ -14,6 +15,7 @@ const statusEl   = document.getElementById('status') as HTMLElement;
 const verdictEl  = document.getElementById('verdict') as HTMLElement;
 const tldrEl     = document.getElementById('tldrList') as HTMLUListElement;
 const adviceEl   = document.getElementById('advice') as HTMLElement;
+const cloudTag   = document.getElementById('cloudTag') as HTMLElement;
 
 const linksEl    = document.getElementById('policyLinks') as HTMLElement;
 
@@ -36,8 +38,29 @@ analyzeBtn?.addEventListener('click', async () => {
     statusEl.textContent = 'Error: ' + (result as any).error;
     return;
   }
-  render(result as AnalyzeResult);
-  statusEl.textContent = 'Done';
+  const local = result as AnalyzeResult;
+  render(local);
+
+  // Try remote analysis if configured
+  if (API_BASE_URL) {
+    try {
+      const payload = toServerPayload(local);
+      const resp = await fetch(API_BASE_URL.replace(/\/$/, '') + '/api/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (resp.ok) {
+        const remote = await resp.json();
+        applyRemote(remote);
+        statusEl.textContent = 'Done (cloud)';
+        if (cloudTag) cloudTag.style.display = '';
+        return;
+      }
+    } catch {}
+  }
+  statusEl.textContent = 'Done (local)';
+  if (cloudTag) cloudTag.style.display = 'none';
 });
 
 function render(data: AnalyzeResult) {
@@ -118,4 +141,45 @@ function classForLevel(level: AnalyzeResult['summary']['score']['level']): strin
 
 function escapeHtml(s: string) {
   return s.replace(/[&<>\"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch] as string));
+}
+
+function toServerPayload(data: AnalyzeResult) {
+  const rejectVal = data.extraction.consent.reject_all_available === true ? 'yes'
+    : data.extraction.consent.reject_all_available === false ? 'no'
+    : 'unclear';
+  return {
+    siteUrl: data.pageUrl,
+    siteType: null,
+    disclosures: {
+      rights_listed: data.extraction.disclosures.user_rights_listed,
+      contact_present: data.extraction.disclosures.contact_or_dpo_listed,
+      pd_retention_present: data.extraction.disclosures.retention_disclosed,
+      cookie_categories_explained: true,
+      cookie_lifespans_disclosed: true,
+      last_updated_present: false
+    },
+    consent: {
+      has_category_choices: data.extraction.consent.granular_controls,
+      reject_non_essential: rejectVal,
+      cmp_name: data.extraction.consent.cmp_name
+    },
+    third_parties: { count: data.extraction.third_parties.count },
+    metrics: data.metrics || undefined
+  };
+}
+
+function applyRemote(remote: any) {
+  // Update verdict + bullets + advice if remote returns them
+  if (!remote) return;
+  const level = remote.verdict === 'LIKELY_OK' ? 'LIKELY_OK' : remote.verdict === 'CAUTION' ? 'CAUTION' : 'AVOID';
+  verdictEl.textContent = level === 'LIKELY_OK' ? 'Likely OK' : level === 'CAUTION' ? 'Proceed with caution' : 'High risk';
+  verdictEl.className = 'pill small ' + (level === 'LIKELY_OK' ? 'ok' : level === 'CAUTION' ? 'warn' : 'bad');
+
+  tldrEl.innerHTML = '';
+  (remote.bullets || []).slice(0,3).forEach((b: string) => {
+    const li = document.createElement('li');
+    li.textContent = b;
+    tldrEl.appendChild(li);
+  });
+  adviceEl.textContent = remote.advice || '';
 }

@@ -77,6 +77,11 @@ export type AnalyzeResult = {
     third_parties: ThirdPartySignals;
     missing: string[];
   };
+  metrics?: {
+    ads_p75_days: number;           // approximated (uses max if p75 not available)
+    analytics_p75_days: number;     // approximated (uses max if p75 not available)
+    very_long_vendors: number;      // count of rows with >730d in ads/marketing
+  };
   summary: Summary; // <- new TL;DR with score & advice
   findings: Array<{ type: string; severity: 'low'|'medium'|'high'; evidence: string }>;
 };

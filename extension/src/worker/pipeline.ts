@@ -365,6 +365,11 @@ import type {
       third_parties,
       missing,
     },
+    metrics: {
+      ads_p75_days: maxTargetDays,
+      analytics_p75_days: maxAnalytics,
+      very_long_vendors: targetingRows.filter(r => maxDaysFromRow(r.lifespan_text, r.raw_row_text) > 730).length,
+    },
     summary,
     findings: [],
   };
