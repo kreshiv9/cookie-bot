@@ -1,20 +1,26 @@
 {
     "name": "policy-analyzer-server",
     "private": true,
-    "type": "module",
+    "version": "0.1.0",
+    "engines": {
+        "node": "20.x"
+    },
     "scripts": {
-      "dev": "vercel dev",
-      "build": "echo \"Vercel builds serverless automatically\"",
-      "prisma:generate": "prisma generate",
-      "prisma:migrate": "prisma migrate dev --name init"
+        "dev": "vercel dev",
+        "build": "echo \"Vercel builds serverless automatically\"",
+        "postinstall": "prisma generate",
+        "prisma:generate": "prisma generate",
+        "prisma:migrate": "prisma migrate dev --name init",
+        "prisma:deploy": "prisma migrate deploy"
     },
     "dependencies": {
-      "@prisma/client": "^5.18.0",
-      "groq-sdk": "^0.5.0",
-      "zod": "^3.23.8"
+        "@prisma/client": "^5.18.0",
+        "dotenv": "^17.2.3",
+        "groq-sdk": "^0.5.0",
+        "zod": "^3.23.8"
     },
     "devDependencies": {
-      "prisma": "^5.18.0",
-      "typescript": "^5.4.0"
+        "prisma": "^5.18.0",
+        "typescript": "^5.4.0"
     }
-  }
+}
