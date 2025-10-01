@@ -97,11 +97,18 @@ app.post('/api/analyze', async (req: any, res: any) => {
     const base = getBaselinesFor(payload.siteType ?? 'retail');
 
     // Safety inputs — accept either precomputed metrics or infer basic ones
-    const adsP75 = payload?.metrics?.ads_p75_days
-      ?? Math.max(...(payload?.durations?.ads_days || [0]));
-    const analyticsP75 = payload?.metrics?.analytics_p75_days
-      ?? Math.max(...(payload?.durations?.analytics_days || [0]));
-    const veryLongVendors = payload?.metrics?.very_long_vendors ?? 0;
+    function p75(arr: number[]): number {
+      const a = (arr || []).filter(n => Number.isFinite(n)).sort((x,y) => x-y);
+      if (!a.length) return 0;
+      const idx = Math.ceil(0.75 * a.length) - 1;
+      return a[Math.max(0, Math.min(a.length - 1, idx))];
+    }
+    const adsArr: number[] = Array.isArray(payload?.durations?.ads_days) ? payload.durations.ads_days : [];
+    const anaArr: number[] = Array.isArray(payload?.durations?.analytics_days) ? payload.durations.analytics_days : [];
+    const outliersArr: number[] = Array.isArray(payload?.durations?.outliers_days) ? payload.durations.outliers_days : [];
+    const adsP75 = Number.isFinite(payload?.metrics?.ads_p75_days) ? payload.metrics.ads_p75_days : p75(adsArr);
+    const analyticsP75 = Number.isFinite(payload?.metrics?.analytics_p75_days) ? payload.metrics.analytics_p75_days : p75(anaArr);
+    const veryLongVendors = Number.isFinite(payload?.metrics?.very_long_vendors) ? payload.metrics.very_long_vendors : outliersArr.filter(n => n > 730).length;
     const thirdCount = payload?.third_parties?.count
       ?? payload?.third_parties?.count === 0 ? 0 : 0;
 
@@ -123,6 +130,22 @@ app.post('/api/analyze', async (req: any, res: any) => {
     });
 
     // AI-first finalization (graceful fallback to rules-only)
+    // Reasons for transparency/safety (for UI and QA)
+    const clarityReasons: string[] = [];
+    if (!payload?.disclosures?.rights_listed) clarityReasons.push('Privacy rights not clearly listed.');
+    if (!payload?.disclosures?.contact_present) clarityReasons.push('Privacy contact/DPO not found.');
+    if (!payload?.disclosures?.pd_retention_present) clarityReasons.push('Personal-data retention not stated.');
+    if (!payload?.disclosures?.last_updated_present) clarityReasons.push('Last updated date not visible.');
+    if ((payload?.readability_hint || 'moderate') === 'legalese') clarityReasons.push('Policy uses heavy legalese.');
+
+    const safetyReasons: string[] = [];
+    if (adsP75 > base.ads_p75_days) safetyReasons.push(`Ads cookies p75 ~${adsP75}d vs typical ~${base.ads_p75_days}d.`);
+    if (analyticsP75 > base.analytics_p75_days) safetyReasons.push(`Analytics cookies p75 ~${analyticsP75}d vs typical ~${base.analytics_p75_days}d.`);
+    if (veryLongVendors > 0) safetyReasons.push(`${veryLongVendors} vendors with very long cookies (>730d).`);
+    if (thirdCount > base.third_party_bands.some) safetyReasons.push(`Many other companies’ cookies (~${thirdCount}).`);
+    if (!payload?.consent?.has_category_choices) safetyReasons.push('No per-category cookie choices.');
+    if (payload?.consent?.reject_non_essential === 'no') safetyReasons.push('No “reject non-essential” option.');
+
     let finalClarity = clarity;
     let finalSafety = safety;
     let v: ReturnType<typeof verdict> = verdict(finalClarity, finalSafety);
@@ -131,7 +154,13 @@ app.post('/api/analyze', async (req: any, res: any) => {
       const ai = await aiSummarizeFinal({
         siteType: payload.siteType ?? null,
         baselines: base,
-        extraction: payload,
+        extraction: {
+          durations: { ads_days: adsArr.slice(0, 64), analytics_days: anaArr.slice(0, 64), outliers_days: outliersArr.slice(0, 64) },
+          third_parties: payload.third_parties,
+          consent: payload.consent,
+          disclosures: payload.disclosures,
+          readability_hint: payload.readability_hint || 'moderate'
+        },
         rule_scores: { clarity_rule_score: clarity, safety_rule_score: safety }
       });
       finalClarity = ai.clarity_final;
@@ -189,7 +218,8 @@ app.post('/api/analyze', async (req: any, res: any) => {
       safety: finalSafety,
       verdict: v,
       bullets: aiOutput.bullets ?? [],
-      advice: aiOutput.advice ?? ''
+      advice: aiOutput.advice ?? '',
+      reasons: { clarity: clarityReasons, safety: safetyReasons }
     });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Internal error' });

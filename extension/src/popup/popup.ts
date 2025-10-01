@@ -16,6 +16,8 @@ const verdictEl  = document.getElementById('verdict') as HTMLElement;
 const tldrEl     = document.getElementById('tldrList') as HTMLUListElement;
 const adviceEl   = document.getElementById('advice') as HTMLElement;
 const cloudTag   = document.getElementById('cloudTag') as HTMLElement;
+const clarityEl  = document.getElementById('clarityScore') as HTMLElement;
+const safetyEl   = document.getElementById('safetyScore') as HTMLElement;
 
 const linksEl    = document.getElementById('policyLinks') as HTMLElement;
 
@@ -23,6 +25,7 @@ const retentionEl= document.getElementById('retentionList') as HTMLUListElement;
 const rcEl       = document.getElementById('rightsContact') as HTMLElement;
 const cookiesEl  = document.getElementById('cookies') as HTMLElement;
 const missingEl  = document.getElementById('missingList') as HTMLUListElement;
+const reasonsEl  = document.getElementById('reasonsList') as HTMLUListElement;
 
 analyzeBtn?.addEventListener('click', async () => {
   statusEl.textContent = 'Analyzing…';
@@ -40,6 +43,8 @@ analyzeBtn?.addEventListener('click', async () => {
   }
   const local = result as AnalyzeResult;
   render(local);
+  if (clarityEl) clarityEl.textContent = 'calculating…';
+  if (safetyEl) safetyEl.textContent = 'calculating…';
 
   // Try remote analysis if configured
   if (API_BASE_URL) {
@@ -76,6 +81,8 @@ function render(data: AnalyzeResult) {
   });
 
   adviceEl.textContent = data.summary.advice;
+  if (clarityEl) clarityEl.textContent = '—';
+  if (safetyEl) safetyEl.textContent = '—';
 
   // Policy links
   linksEl.innerHTML = data.policy.urls.length
@@ -126,6 +133,7 @@ function render(data: AnalyzeResult) {
     li.textContent = m;
     missingEl.appendChild(li);
   });
+  if (reasonsEl) reasonsEl.innerHTML = '';
 }
 
 function labelForLevel(level: AnalyzeResult['summary']['score']['level']): string {
@@ -150,6 +158,7 @@ function toServerPayload(data: AnalyzeResult) {
   return {
     siteUrl: data.pageUrl,
     siteType: null,
+    durations: data.extraction.durations || undefined,
     disclosures: {
       rights_listed: data.extraction.disclosures.user_rights_listed,
       contact_present: data.extraction.disclosures.contact_or_dpo_listed,
@@ -164,7 +173,8 @@ function toServerPayload(data: AnalyzeResult) {
       cmp_name: data.extraction.consent.cmp_name
     },
     third_parties: { count: data.extraction.third_parties.count },
-    metrics: data.metrics || undefined
+    metrics: data.metrics || undefined,
+    readability_hint: data.readability_hint || 'moderate'
   };
 }
 
@@ -182,4 +192,13 @@ function applyRemote(remote: any) {
     tldrEl.appendChild(li);
   });
   adviceEl.textContent = remote.advice || '';
+  if (typeof remote.clarity === 'number' && clarityEl) clarityEl.textContent = String(remote.clarity);
+  if (typeof remote.safety === 'number' && safetyEl) safetyEl.textContent = String(remote.safety);
+  if (reasonsEl) {
+    reasonsEl.innerHTML = '';
+    const list: string[] = [];
+    if (remote?.reasons?.clarity) list.push(...remote.reasons.clarity);
+    if (remote?.reasons?.safety) list.push(...remote.reasons.safety);
+    list.slice(0, 8).forEach(r => { const li = document.createElement('li'); li.textContent = r; reasonsEl.appendChild(li); });
+  }
 }

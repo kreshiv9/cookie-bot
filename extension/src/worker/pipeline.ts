@@ -92,6 +92,23 @@ import type {
     return /target|advert|ads|marketing/.test(row.category || '') || containsAny(blob, adsHints);
   }
   
+  function percentile75(values: number[]): number {
+    const arr = values.filter(v => Number.isFinite(v)).sort((a,b) => a-b);
+    if (arr.length === 0) return 0;
+    const idx = Math.ceil(0.75 * arr.length) - 1;
+    return arr[Math.max(0, Math.min(arr.length - 1, idx))];
+  }
+
+  function readabilityHint(text: string): 'plain'|'moderate'|'legalese' {
+    const words = text.split(/\s+/).filter(Boolean);
+    const sentences = text.split(/[\.!?]+/).filter(s => s.trim().length > 0);
+    const avgLen = sentences.length ? (words.length / sentences.length) : 20;
+    const legaleseHits = (text.match(/hereby|thereof|hereto|pursuant|notwithstanding|whereas|therein|thereon|therewith/gi) || []).length;
+    if (avgLen > 25 || legaleseHits >= 3) return 'legalese';
+    if (avgLen > 18 || legaleseHits >= 1) return 'moderate';
+    return 'plain';
+  }
+
   // -- content bridge -------------------------------------------
   
   export async function discoverPolicyUrlsOnPage(tabId: number): Promise<string[]> {
@@ -228,6 +245,8 @@ import type {
     };
   
     // 6) third-party trackers (from table domains vs site)
+    const analyticsRows = tableRows.filter(isAnalyticsRow);
+    const targetingRows = tableRows.filter(isAdsRow);
     const siteRoot = approxSiteRoot(new URL(pageUrl).hostname);
     const domainRegex = /(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}/i;
     const domains = new Set<string>();
@@ -247,14 +266,18 @@ import type {
       top_domains: Array.from(domains).slice(0, 3)
     };
   
-    // 7) disclosures + missing
+    // 6b) durations arrays + p75s
+    const adsDurations: number[] = targetingRows.map(r => maxDaysFromRow(r.lifespan_text, r.raw_row_text)).filter(n => n >= 0);
+    const analyticsDurations: number[] = analyticsRows.map(r => maxDaysFromRow(r.lifespan_text, r.raw_row_text)).filter(n => n >= 0);
+    const outliersDays: number[] = [...adsDurations, ...analyticsDurations].filter(n => n > 730);
+
+  // 7) disclosures + missing
     const rightsRegex = /\bright(s)?\b.*\b(access|rectification|erasure|deletion|portability|object|objection|restriction|appeal)\b/i;
     const rights =
       rightsRegex.test(text) ||
       /\byou have the right to\b/i.test(text);
     const contact = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i.test(text) || /data protection officer|DPO/i.test(text);
   
-    const anyRetention = retention.length > 0;
     const anyPdRetention = retention.some(r => r.source_type === 'policy_text' && r.data_category === 'personal_data');
   
     const missing: string[] = [];
@@ -269,8 +292,6 @@ import type {
   const reasons: string[] = [];
 
   // Accurate max durations by category using row-level max
-  const analyticsRows = tableRows.filter(isAnalyticsRow);
-  const targetingRows = tableRows.filter(isAdsRow);
 
   const maxAnalytics = analyticsRows.reduce((mx, r) => Math.max(mx, maxDaysFromRow(r.lifespan_text, r.raw_row_text)), 0);
   const maxTargetDays = targetingRows.reduce((mx, r) => Math.max(mx, maxDaysFromRow(r.lifespan_text, r.raw_row_text)), 0);
@@ -350,11 +371,14 @@ import type {
     maxAge: c.expirationDate ? Math.max(0, Math.round(c.expirationDate - (Date.now() / 1000))) : null,
   }));
 
+  const readHint = readabilityHint(text);
+
   return {
     pageUrl,
     policy: { urls, text: text.slice(0, 10000) },
     cookies: { pre },
     extraction: {
+      durations: { ads_days: adsDurations, analytics_days: analyticsDurations, outliers_days: outliersDays },
       retention,
       disclosures: {
         retention_disclosed: retention.length > 0,
@@ -366,10 +390,11 @@ import type {
       missing,
     },
     metrics: {
-      ads_p75_days: maxTargetDays,
-      analytics_p75_days: maxAnalytics,
-      very_long_vendors: targetingRows.filter(r => maxDaysFromRow(r.lifespan_text, r.raw_row_text) > 730).length,
+      ads_p75_days: percentile75(adsDurations) || maxTargetDays,
+      analytics_p75_days: percentile75(analyticsDurations) || maxAnalytics,
+      very_long_vendors: adsDurations.filter(n => n > 730).length,
     },
+    readability_hint: readHint,
     summary,
     findings: [],
   };

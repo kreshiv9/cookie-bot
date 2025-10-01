@@ -67,6 +67,7 @@ export type AnalyzeResult = {
   policy: { urls: string[]; text: string };
   cookies: { pre: CookieItem[] };
   extraction: {
+    durations?: { ads_days: number[]; analytics_days: number[]; outliers_days: number[] };
     retention: RetentionItem[];
     disclosures: {
       retention_disclosed: boolean;     // any retention (cookie or PD) found
@@ -82,6 +83,7 @@ export type AnalyzeResult = {
     analytics_p75_days: number;     // approximated (uses max if p75 not available)
     very_long_vendors: number;      // count of rows with >730d in ads/marketing
   };
+  readability_hint?: 'plain'|'moderate'|'legalese';
   summary: Summary; // <- new TL;DR with score & advice
   findings: Array<{ type: string; severity: 'low'|'medium'|'high'; evidence: string }>;
 };
