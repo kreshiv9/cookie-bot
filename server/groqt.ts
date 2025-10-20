@@ -1,5 +1,5 @@
+import 'dotenv/config';
 import Groq from "groq-sdk";
-"import 'dotenv/config';"
 
 const client = new Groq({ apiKey: process.env.GROQ_API_KEY });
 

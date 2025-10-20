@@ -1,12 +1,14 @@
+import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import { prisma } from './db';
-import { scoreClarity, scoreSafety, verdict } from './scoring';
+import { scoreClarity } from './scoring';
 import { aiSummarizeFinal } from './ai';
 import { getBaselinesFor } from './baselines';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const DB_ENABLED = process.env.ENABLE_DB === 'true';
 
 app.use(cors());
 app.use(express.json({ limit: '250kb' }));
@@ -35,58 +37,27 @@ app.post('/api/analyze', async (req: any, res: any) => {
     if (!url) return res.status(400).json({ error: 'siteUrl is required' });
     const domain = new URL(url).hostname.replace(/^www\./, '');
 
-    // Upsert site (for caching we might return early; but we need domain first)
-    const site = await prisma.site.upsert({
-      where: { domain },
-      update: {},
-      create: { domain, category: payload.siteType ?? null }
-    });
-
-    // Cache: if rawTextHash provided and we already analyzed it for this domain, return cached
-    const rawHash: string | null = payload.rawTextHash ?? null;
-    if (rawHash) {
-      const cached = await prisma.analysis.findFirst({
-        where: {
-          site: { domain },
-          policy: { rawTextHash: rawHash }
-        },
-        orderBy: { createdAt: 'desc' },
-        select: {
-          clarityScoreFinal: true,
-          safetyScoreFinal: true,
-          verdict: true,
-          aiOutput: true
-        }
+    // Upsert site only if DB is enabled
+    let siteId: string | null = null;
+    if (DB_ENABLED) {
+      const site = await prisma.site.upsert({
+        where: { domain },
+        update: {},
+        create: { domain, category: payload.siteType ?? null }
       });
-      if (cached && cached.aiOutput) {
-        const ai = cached.aiOutput as any;
-        return res.json({
-          clarity: cached.clarityScoreFinal,
-          safety: cached.safetyScoreFinal,
-          verdict: cached.verdict,
-          bullets: ai.bullets ?? [],
-          advice: ai.advice ?? ''
-        });
-      }
+      siteId = site.id;
     }
 
-    // Policy snapshot (optionally include a text hash from client)
-    const policy = await prisma.policy.create({
-      data: {
-        siteId: site.id,
-        url,
-        lang: payload.lang ?? null,
-        rawTextHash: payload.rawTextHash ?? 'n/a'
-      }
-    });
+    // Note: We will persist Policy/Extraction/Analysis only after AI succeeds
 
     // Clarity inputs — map to expected fields (with safe fallbacks)
     const clarity = scoreClarity({
       rights_listed: !!payload?.disclosures?.rights_listed,
       contact_present: !!payload?.disclosures?.contact_present,
       pd_retention_present: !!payload?.disclosures?.pd_retention_present,
-      cookie_categories_explained: payload?.disclosures?.cookie_categories_explained ?? true,
-      cookie_lifespans_disclosed: payload?.disclosures?.cookie_lifespans_disclosed ?? true,
+      // Default to false so we don't over-credit when data is missing
+      cookie_categories_explained: payload?.disclosures?.cookie_categories_explained ?? false,
+      cookie_lifespans_disclosed: payload?.disclosures?.cookie_lifespans_disclosed ?? false,
       has_category_choices: !!payload?.consent?.has_category_choices,
       reject_non_essential: payload?.consent?.reject_non_essential ?? 'unclear',
       cmp_name: payload?.consent?.cmp_name ?? null,
@@ -97,129 +68,95 @@ app.post('/api/analyze', async (req: any, res: any) => {
     const base = getBaselinesFor(payload.siteType ?? 'retail');
 
     // Safety inputs — accept either precomputed metrics or infer basic ones
-    function p75(arr: number[]): number {
-      const a = (arr || []).filter(n => Number.isFinite(n)).sort((x,y) => x-y);
-      if (!a.length) return 0;
-      const idx = Math.ceil(0.75 * a.length) - 1;
-      return a[Math.max(0, Math.min(a.length - 1, idx))];
-    }
-    const adsArr: number[] = Array.isArray(payload?.durations?.ads_days) ? payload.durations.ads_days : [];
-    const anaArr: number[] = Array.isArray(payload?.durations?.analytics_days) ? payload.durations.analytics_days : [];
-    const outliersArr: number[] = Array.isArray(payload?.durations?.outliers_days) ? payload.durations.outliers_days : [];
-    const adsP75 = Number.isFinite(payload?.metrics?.ads_p75_days) ? payload.metrics.ads_p75_days : p75(adsArr);
-    const analyticsP75 = Number.isFinite(payload?.metrics?.analytics_p75_days) ? payload.metrics.analytics_p75_days : p75(anaArr);
-    const veryLongVendors = Number.isFinite(payload?.metrics?.very_long_vendors) ? payload.metrics.very_long_vendors : outliersArr.filter(n => n > 730).length;
-    const thirdCount = payload?.third_parties?.count
-      ?? payload?.third_parties?.count === 0 ? 0 : 0;
+    // Accept metrics as provided; treat missing as null (unknown)
+    const adsP75 = Number.isFinite(payload?.metrics?.ads_p75_days) ? payload.metrics.ads_p75_days : null;
+    const analyticsP75 = Number.isFinite(payload?.metrics?.analytics_p75_days) ? payload.metrics.analytics_p75_days : null;
+    const veryLongVendors = Number.isFinite(payload?.metrics?.very_long_vendors) ? payload.metrics.very_long_vendors : null;
+    const thirdCount = (typeof payload?.third_parties?.count === 'number' && Number.isFinite(payload.third_parties.count))
+      ? payload.third_parties.count
+      : null;
 
-    const safety = scoreSafety({
-      site_category: (payload.siteType ?? 'retail') as any,
-      ads_p75_days: Number.isFinite(adsP75) ? adsP75 : 0,
-      analytics_p75_days: Number.isFinite(analyticsP75) ? analyticsP75 : 0,
-      very_long_count: Number.isFinite(veryLongVendors) ? veryLongVendors : 0,
-      third_parties_count: Number.isFinite(thirdCount) ? thirdCount : 0,
-      bands: base.third_party_bands,
-      consent_penalties: {
-        no_choices: !payload?.consent?.has_category_choices,
-        no_reject: payload?.consent?.reject_non_essential === 'no',
-        unclear_reject: payload?.consent?.reject_non_essential === 'unclear'
-      },
-      sensitive_trackers: !!payload?.metrics?.sensitive_trackers,
-      baseline_ads_p75: base.ads_p75_days,
-      baseline_analytics_p75: base.analytics_p75_days
-    });
-
-    // AI-first finalization (graceful fallback to rules-only)
-    // Reasons for transparency/safety (for UI and QA)
-    const clarityReasons: string[] = [];
-    if (!payload?.disclosures?.rights_listed) clarityReasons.push('Privacy rights not clearly listed.');
-    if (!payload?.disclosures?.contact_present) clarityReasons.push('Privacy contact/DPO not found.');
-    if (!payload?.disclosures?.pd_retention_present) clarityReasons.push('Personal-data retention not stated.');
-    if (!payload?.disclosures?.last_updated_present) clarityReasons.push('Last updated date not visible.');
-    if ((payload?.readability_hint || 'moderate') === 'legalese') clarityReasons.push('Policy uses heavy legalese.');
-
-    const safetyReasons: string[] = [];
-    if (adsP75 > base.ads_p75_days) safetyReasons.push(`Ads cookies p75 ~${adsP75}d vs typical ~${base.ads_p75_days}d.`);
-    if (analyticsP75 > base.analytics_p75_days) safetyReasons.push(`Analytics cookies p75 ~${analyticsP75}d vs typical ~${base.analytics_p75_days}d.`);
-    if (veryLongVendors > 0) safetyReasons.push(`${veryLongVendors} vendors with very long cookies (>730d).`);
-    if (thirdCount > base.third_party_bands.some) safetyReasons.push(`Many other companies’ cookies (~${thirdCount}).`);
-    if (!payload?.consent?.has_category_choices) safetyReasons.push('No per-category cookie choices.');
-    if (payload?.consent?.reject_non_essential === 'no') safetyReasons.push('No “reject non-essential” option.');
-
+    // AI-first finalization (no rules-only fallback)
     let finalClarity = clarity;
-    let finalSafety = safety;
-    let v: ReturnType<typeof verdict> = verdict(finalClarity, finalSafety);
+    let finalSafety = 0;
+    let v: 'LIKELY_OK'|'CAUTION'|'HIGH_RISK' = 'CAUTION';
     let aiOutput: any = null;
     try {
       const ai = await aiSummarizeFinal({
         siteType: payload.siteType ?? null,
         baselines: base,
         extraction: {
-          durations: { ads_days: adsArr.slice(0, 64), analytics_days: anaArr.slice(0, 64), outliers_days: outliersArr.slice(0, 64) },
+          // Intentionally do not include raw duration arrays to avoid outlier-driven phrasing
           third_parties: payload.third_parties,
           consent: payload.consent,
           disclosures: payload.disclosures,
+          durations_evidence: payload?.durations_evidence,
+          third_parties_evidence: payload?.third_parties_evidence,
+          retention: Array.isArray(payload?.retention) ? payload.retention.slice(0, 5) : undefined,
+          policy_urls: Array.isArray(payload?.policy_urls) ? payload.policy_urls.slice(0, 3) : undefined,
           readability_hint: payload.readability_hint || 'moderate'
         },
-        rule_scores: { clarity_rule_score: clarity, safety_rule_score: safety }
+        metrics: { ads_p75: adsP75, analytics_p75: analyticsP75, very_long_count: veryLongVendors, third_parties_count: thirdCount },
+        rule_scores: { clarity_rule_score: clarity }
       });
       finalClarity = ai.clarity_final;
       finalSafety = ai.safety_final;
       v = ai.verdict;
       aiOutput = ai;
     } catch {
-      aiOutput = {
-        bullets: [
-          'We analyzed the site’s policy and cookie practices.',
-          'If available, turn off advertising cookies; keep essential cookies on.'
-        ],
-        advice: 'Proceed carefully and only accept what you need.',
-        clarity_final: finalClarity,
-        safety_final: finalSafety,
-        verdict: v
-      };
+      return res.status(502).json({ error: 'AI unavailable, please retry' });
     }
 
-    // Persist extraction snapshot (optional fields guarded)
-    await prisma.extraction.create({
-      data: {
-        policyId: policy.id,
-        extractionJson: payload,
-        adsP75Days: Number.isFinite(adsP75) ? adsP75 : 0,
-        analyticsP75Days: Number.isFinite(analyticsP75) ? analyticsP75 : 0,
-        thirdPartiesCount: Number.isFinite(thirdCount) ? thirdCount : 0,
-        hasChoices: !!payload?.consent?.has_category_choices,
-        rejectNonEssential: payload?.consent?.reject_non_essential ?? 'unclear',
-        rightsListed: !!payload?.disclosures?.rights_listed,
-        contactPresent: !!payload?.disclosures?.contact_present,
-        pdRetentionPresent: !!payload?.disclosures?.pd_retention_present,
-        lastUpdatedPresent: payload?.disclosures?.last_updated_present ?? false,
-        readabilityHint: payload?.readability_hint ?? 'moderate'
-      }
-    });
+    // Persist only on AI success and when DB is enabled
+    if (DB_ENABLED && siteId) {
+      const policy = await prisma.policy.create({
+        data: {
+          siteId: siteId,
+          url,
+          lang: payload.lang ?? null,
+          rawTextHash: payload.rawTextHash ?? 'n/a'
+        }
+      });
 
-    await prisma.analysis.create({
-      data: {
-        siteId: site.id,
-        policyId: policy.id,
-        clarityScoreRule: Math.round(clarity),
-        safetyScoreRule: Math.round(safety),
-        clarityScoreFinal: Math.round(finalClarity),
-        safetyScoreFinal: Math.round(finalSafety),
-        verdict: v,
-        aiProvider: 'groq',
-        aiVersion: 'llama-3.1-8b-instruct',
-        aiOutput
-      }
-    });
+      await prisma.extraction.create({
+        data: {
+          policyId: policy.id,
+          extractionJson: payload,
+          adsP75Days: Number.isFinite(adsP75) ? adsP75 : 0,
+          analyticsP75Days: Number.isFinite(analyticsP75) ? analyticsP75 : 0,
+          thirdPartiesCount: Number.isFinite(thirdCount) ? thirdCount : 0,
+          hasChoices: !!payload?.consent?.has_category_choices,
+          rejectNonEssential: payload?.consent?.reject_non_essential ?? 'unclear',
+          rightsListed: !!payload?.disclosures?.rights_listed,
+          contactPresent: !!payload?.disclosures?.contact_present,
+          pdRetentionPresent: !!payload?.disclosures?.pd_retention_present,
+          lastUpdatedPresent: payload?.disclosures?.last_updated_present ?? false,
+          readabilityHint: payload?.readability_hint ?? 'moderate'
+        }
+      });
 
-    res.json({
+      await prisma.analysis.create({
+        data: {
+          siteId: siteId,
+          policyId: policy.id,
+          clarityScoreRule: Math.round(clarity),
+          safetyScoreRule: 0,
+          clarityScoreFinal: Math.round(finalClarity),
+          safetyScoreFinal: Math.round(finalSafety),
+          verdict: v,
+          aiProvider: 'groq',
+          aiVersion: 'llama-3.1-8b-instant',
+          aiOutput
+        }
+      });
+    }
+
+    return res.json({
       clarity: finalClarity,
       safety: finalSafety,
       verdict: v,
       bullets: aiOutput.bullets ?? [],
-      advice: aiOutput.advice ?? '',
-      reasons: { clarity: clarityReasons, safety: safetyReasons }
+      advice: aiOutput.advice ?? ''
     });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Internal error' });

@@ -123,7 +123,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         safetyScoreFinal: finalSafety,
         verdict: v,
         aiProvider: 'groq',
-        aiVersion: 'llama-3.1-8b-instruct',
+        aiVersion: 'llama-3.1-8b-instant',
         aiOutput
       }
     });

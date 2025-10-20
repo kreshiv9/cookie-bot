@@ -22,7 +22,13 @@ export type PolicyBundle = { urls: string[]; text: string };
 export type CookieTableRow = {
   cookie_name?: string | null;
   category?: string | null;
-  lifespan_text?: string | null; // e.g., "364 Days", "Session", "A few seconds"
+  lifespan_text?: string | null; // e.g., "364 days", "Session", "One year"
+  ttl_days?: number | null;      // parsed days (session => 0)
+  ttl_source?: 'table'|'text'|null;
+  provider_text?: string | null; // provider/company cell text
+  provider_domain?: string | null; // normalized domain if present
+  third_party?: boolean | null;  // computed vs site root
+  third_party_source?: 'table'|'text'|null;
   raw_row_text?: string | null;  // fallback snippet
   domain_hint?: string | null;   // may appear inside row text
 };
@@ -45,7 +51,7 @@ export type ConsentSignals = {
 };
 
 export type ThirdPartySignals = {
-  count: number;
+  count: number; // numeric count derived from cookie table rows
   top_domains: string[];          // up to 3
 };
 
@@ -68,6 +74,7 @@ export type AnalyzeResult = {
   cookies: { pre: CookieItem[] };
   extraction: {
     durations?: { ads_days: number[]; analytics_days: number[]; outliers_days: number[] };
+    durations_evidence?: 'cookie_table'|'policy_text'|'none';
     retention: RetentionItem[];
     disclosures: {
       retention_disclosed: boolean;     // any retention (cookie or PD) found
@@ -76,12 +83,15 @@ export type AnalyzeResult = {
     };
     consent: ConsentSignals;
     third_parties: ThirdPartySignals;
+    third_parties_evidence?: 'cookie_table'|'policy_text'|'none';
     missing: string[];
   };
   metrics?: {
-    ads_p75_days: number;           // approximated (uses max if p75 not available)
-    analytics_p75_days: number;     // approximated (uses max if p75 not available)
-    very_long_vendors: number;      // count of rows with >730d in ads/marketing
+    ads_p75_days?: number;           // p75 if available
+    analytics_p75_days?: number;     // p75 if available
+    very_long_vendors?: number;      // count of rows with >730d in ads/marketing
+    max_ads_days?: number;           // maximum observed ads cookie duration (days)
+    max_analytics_days?: number;     // maximum observed analytics cookie duration (days)
   };
   readability_hint?: 'plain'|'moderate'|'legalese';
   summary: Summary; // <- new TL;DR with score & advice

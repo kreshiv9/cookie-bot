@@ -3,8 +3,8 @@ import { z } from 'zod';
 export const AiVerdict = z.enum(['LIKELY_OK', 'CAUTION', 'HIGH_RISK']);
 
 export const AiOutputFinalSchema = z.object({
-  bullets: z.array(z.string()).min(1).max(5),
-  advice: z.string().min(1),
+  bullets: z.array(z.string()).length(3),
+  advice: z.string().min(1).max(200),
   clarity_final: z.number().min(0).max(100),
   safety_final: z.number().min(0).max(100),
   verdict: AiVerdict,
@@ -12,4 +12,3 @@ export const AiOutputFinalSchema = z.object({
 });
 
 export type AiOutputFinal = z.infer<typeof AiOutputFinalSchema>;
-

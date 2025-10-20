@@ -72,10 +72,12 @@ import type {
 
   // Vendor/name hints (small curated lists)
   const analyticsHints = [
-    'analytics', 'google analytics', '_ga', '_gid', '_gat', 'gtm', 'gtag', 'rt', 'optimizely', 'segment', 'adobe analytics'
+    'analytics','google analytics','_ga','_gid','_gat','gtm','gtag','rt','optimizely','segment','adobe analytics',
+    'mixpanel','heap','hotjar','amplitude','snowplow','yandex metrica','linkedin insight','piwik','pendo','fullstory'
   ];
   const adsHints = [
-    'ad', 'advert', 'marketing', 'doubleclick', 'criteo', 'adnxs', '_fbp', 'tiktok', 'tt_', 'gcl', 'taboola', 'outbrain', 'trade desk', 'quantcast'
+    'ad','advert','marketing','doubleclick','criteo','adnxs','_fbp','tiktok','tt_','gcl','taboola','outbrain','trade desk','quantcast',
+    'adroll','bing','microsoft advertising','amazon ads','pubmatic','rubicon','openx','index exchange','smartadserver','33across','yahoo','teads','mediamath'
   ];
 
   function containsAny(hay: string, needles: string[]): boolean {
@@ -225,13 +227,22 @@ import type {
       /onetrust|optanon/i.test(text) ? 'OneTrust' :
       /trustarc/i.test(text) ? 'TrustArc' :
       /cookiebot/i.test(text) ? 'Cookiebot' :
-      /quantcast/i.test(text) ? 'Quantcast' : null;
+      /quantcast/i.test(text) ? 'Quantcast' :
+      /didomi/i.test(text) ? 'Didomi' :
+      /usercentrics/i.test(text) ? 'Usercentrics' :
+      /iubenda/i.test(text) ? 'Iubenda' :
+      /osano/i.test(text) ? 'Osano' :
+      /cookieyes/i.test(text) ? 'CookieYes' :
+      /termly/i.test(text) ? 'Termly' :
+      /ketch/i.test(text) ? 'Ketch' :
+      /transcend/i.test(text) ? 'Transcend' : null;
 
     const granular_controls =
-      /\b(preferences|manage (cookie|cookies)|granular|category|settings)\b/i.test(text);
+      /\b(preferences|manage (cookie|cookies)|granular|category|settings|consent (center|centre)|cookie (center|centre)|preferences centre|cookie preferences)\b/i.test(text);
 
     let reject_all_available: boolean | 'unclear' =
-      /\breject all\b/i.test(text) || /\bdecline\b/i.test(text) ? true : false;
+      /\breject all\b/i.test(text) || /\bdecline\b/i.test(text) || /\bdeny all\b/i.test(text) || /\breject non-?essential\b/i.test(text) || /\bonly (?:essential|necessary)\b/i.test(text)
+        ? true : false;
 
     // If a CMP is present but we didn't find explicit copy for reject-all, mark as 'unclear'
     if (cmpName && reject_all_available === false) {
@@ -249,30 +260,46 @@ import type {
     const targetingRows = tableRows.filter(isAdsRow);
     const siteRoot = approxSiteRoot(new URL(pageUrl).hostname);
     const domainRegex = /(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}/i;
-    const domains = new Set<string>();
+    const fallbackDomains = new Set<string>();
+    const providerDomains = new Set<string>();
     for (const r of tableRows) {
-      // try to grab a domain from row text
-      let d = r.raw_row_text?.match(domainRegex)?.[0] || null;
-      if (!d && r.cookie_name && domainRegex.test(r.cookie_name)) {
-        d = r.cookie_name!.match(domainRegex)![0];
+      const prov = (r as any).provider_domain as (string | null | undefined);
+      const isTp = (r as any).third_party as (boolean | null | undefined);
+      if (prov && isTp === true) {
+        const root = approxSiteRoot(prov.toLowerCase());
+        if (root && root.indexOf(siteRoot) === -1) providerDomains.add(root);
+        continue;
+      }
+      // fallback: scan row text for domains
+      let d = (r as any).raw_row_text?.match(domainRegex)?.[0] || null;
+      if (!d && (r as any).cookie_name && domainRegex.test((r as any).cookie_name)) {
+        d = (r as any).cookie_name.match(domainRegex)![0];
       }
       if (d) {
         const root = approxSiteRoot(d.toLowerCase());
-        if (root && root.indexOf(siteRoot) === -1) domains.add(root);
+        if (root && root.indexOf(siteRoot) === -1) fallbackDomains.add(root);
       }
     }
+    const chosen = providerDomains.size > 0 ? providerDomains : fallbackDomains;
     const third_parties: ThirdPartySignals = {
-      count: domains.size,
-      top_domains: Array.from(domains).slice(0, 3)
+      count: chosen.size,
+      top_domains: Array.from(chosen).slice(0, 3)
     };
+    const third_parties_evidence: 'cookie_table'|'policy_text'|'none' =
+      (providerDomains.size > 0) ? 'cookie_table' : (chosen.size > 0 ? 'policy_text' : (/third[- ]?part(y|ies)/i.test(text) ? 'policy_text' : 'none'));
   
     // 6b) durations arrays + p75s
-    const adsDurations: number[] = targetingRows.map(r => maxDaysFromRow(r.lifespan_text, r.raw_row_text)).filter(n => n >= 0);
-    const analyticsDurations: number[] = analyticsRows.map(r => maxDaysFromRow(r.lifespan_text, r.raw_row_text)).filter(n => n >= 0);
+    const adsDurations: number[] = targetingRows
+      .map(r => (typeof (r as any).ttl_days === 'number' ? (r as any).ttl_days : maxDaysFromRow((r as any).lifespan_text, (r as any).raw_row_text)))
+      .filter(n => Number.isFinite(n) && n >= 0);
+    const analyticsDurations: number[] = analyticsRows
+      .map(r => (typeof (r as any).ttl_days === 'number' ? (r as any).ttl_days : maxDaysFromRow((r as any).lifespan_text, (r as any).raw_row_text)))
+      .filter(n => Number.isFinite(n) && n >= 0);
     const outliersDays: number[] = [...adsDurations, ...analyticsDurations].filter(n => n > 730);
+    const durations_evidence: 'cookie_table'|'none' = (adsDurations.length + analyticsDurations.length) > 0 ? 'cookie_table' : 'none';
 
   // 7) disclosures + missing
-    const rightsRegex = /\bright(s)?\b.*\b(access|rectification|erasure|deletion|portability|object|objection|restriction|appeal)\b/i;
+    const rightsRegex = /\bright(s)?\b.*\b(access|rectification|erasure|deletion|portability|object|objection|restriction|appeal|withdraw consent|complaint|opt\s?-?out|restrict processing|correct|update)\b/i;
     const rights =
       rightsRegex.test(text) ||
       /\byou have the right to\b/i.test(text);
@@ -373,12 +400,13 @@ import type {
 
   const readHint = readabilityHint(text);
 
-  return {
+    return {
     pageUrl,
     policy: { urls, text: text.slice(0, 10000) },
     cookies: { pre },
     extraction: {
       durations: { ads_days: adsDurations, analytics_days: analyticsDurations, outliers_days: outliersDays },
+      durations_evidence,
       retention,
       disclosures: {
         retention_disclosed: retention.length > 0,
@@ -387,12 +415,15 @@ import type {
       },
       consent,
       third_parties,
+      third_parties_evidence,
       missing,
     },
     metrics: {
-      ads_p75_days: percentile75(adsDurations) || maxTargetDays,
-      analytics_p75_days: percentile75(analyticsDurations) || maxAnalytics,
-      very_long_vendors: adsDurations.filter(n => n > 730).length,
+      ads_p75_days: (adsDurations.length > 0 ? percentile75(adsDurations) : undefined),
+      analytics_p75_days: (analyticsDurations.length > 0 ? percentile75(analyticsDurations) : undefined),
+      very_long_vendors: ((adsDurations.length + analyticsDurations.length) > 0 ? adsDurations.filter(n => n > 730).length : undefined),
+      max_ads_days: maxTargetDays,
+      max_analytics_days: maxAnalytics,
     },
     readability_hint: readHint,
     summary,
