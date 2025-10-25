@@ -103,5 +103,4 @@ Troubleshooting
 - No cloud results → verify `API_BASE_URL` and server running
 - Cookie table missed → some pages render late; reopen the popup after a second
 
-License
-- Add your preferred license in `LICENSE`.
+
