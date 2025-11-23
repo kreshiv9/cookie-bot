@@ -1,6 +1,6 @@
 # Cookie / Policy Analyzer
 
-![image]("Cookie-bot.jpeg")
+![image]("cookie-bot/Cookie-bot.jpeg")
 
 **AI-powered Chrome extension for a quick, clear safety check.**  
 Reads long cookie/privacy policies, extracts key details, and points out potential risks in plain English.
