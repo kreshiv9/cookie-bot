@@ -1,3 +1,10 @@
+/*
+DISABLED FILE (renamed to rm-analyze.ts)
+Reason: Superseded by Express server in server/src/index.ts; this legacy Vercel route is out of sync.
+Original path: server/api/analyze.ts
+
+Preserved original content below (commented out):
+------------------------------------------------
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { prisma } from '../src/db';
 import { scoreClarity, scoreSafety, verdict } from '../src/scoring';
@@ -151,3 +158,4 @@ function getBaselinesFor(siteType: string) {
     third_party_bands: { few: 5, some: 19, many: 49 }
   } as any;
 }
+*/

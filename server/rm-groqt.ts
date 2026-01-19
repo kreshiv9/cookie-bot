@@ -1,3 +1,10 @@
+/*
+DISABLED FILE (renamed to rm-groqt.ts)
+Reason: Developer-only Groq smoke test, not needed in production.
+Original path: server/groqt.ts
+
+Preserved original content below (commented out):
+------------------------------------------------
 import 'dotenv/config';
 import Groq from "groq-sdk";
 
@@ -11,3 +18,4 @@ async function main() {
   console.log(resp.choices[0].message);
 }
 main();
+*/

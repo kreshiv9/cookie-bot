@@ -1,0 +1,42 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Cookie Bot v2</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Cookie Bot v2</h1>
+      <span id="cloud-badge" class="badge">cloud</span>
+    </header>
+
+    <section class="controls">
+      <button id="analyzeBtn">Analyze</button>
+      <span id="status" class="muted"></span>
+    </section>
+
+    <section id="summary" class="card hidden">
+      <div class="verdict">
+        <span id="verdictBadge" class="badge">-</span>
+        <span id="scores"></span>
+      </div>
+      <ul id="bullets" class="bullets"></ul>
+      <div id="advice" class="advice"></div>
+    </section>
+
+    <details id="details" class="hidden">
+      <summary>Show details</summary>
+      <div id="detailsContent"></div>
+    </details>
+
+    <footer>
+      <span class="muted">No full policy text leaves your device.</span>
+      <span id="local-badge" class="badge outlined">local</span>
+    </footer>
+
+    <script type="module" src="popup.js"></script>
+  </body>
+  </html>
+

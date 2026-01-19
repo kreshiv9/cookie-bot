@@ -1,0 +1,16 @@
+/*
+DISABLED FILE (renamed to rm-vercel.json)
+Reason: Only needed when deploying Vercel `server/api/*` handlers; this repo now uses Express in server/src/index.ts.
+Original path: server/vercel.json
+
+Preserved original content below (commented out):
+------------------------------------------------
+{
+  "version": 2,
+  "functions": {
+    "api/**/*.{js,ts}": {
+      "runtime": "vercel/node@20.x"
+    }
+  }
+}
+*/
