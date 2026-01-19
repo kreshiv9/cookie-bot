@@ -30,7 +30,8 @@ export async function summarize(req: SummarizeRequest): Promise<SummarizeResult>
     if (!Array.isArray(parsed.bullets) || parsed.bullets.length !== 3 || typeof parsed.advice !== 'string') {
       throw new Error('Invalid AI shape');
     }
-    return { response: parsed as SummarizeResponse, source: 'ai', model };
+    const sanitized = sanitizeResponse(req, parsed as SummarizeResponse);
+    return { response: sanitized, source: 'ai', model };
   } catch (e) {
     return { response: fallbackSummary(req), source: 'fallback' };
   }
@@ -62,4 +63,51 @@ function fallbackSummary(req: SummarizeRequest): SummarizeResponse {
     ? 'Tip: Use “reject non‑essential” and category toggles as needed.'
     : 'Tip: Look for “reject non‑essential” or per‑category toggles.';
   return { bullets, advice };
+}
+
+function sanitizeResponse(req: SummarizeRequest, ai: SummarizeResponse): SummarizeResponse {
+  const bullets = [...ai.bullets];
+  const advice = (ai.advice || '').replace(/third-?party cookies/ig, 'other companies’ cookies');
+  // Always enforce deterministic first two bullets and phrasing
+  const b1 = deterministicBullet1(req);
+  const b2 = deterministicBullet2(req);
+  let b3 = (bullets[2] || '').replace(/third-?party cookies/ig, 'other companies’ cookies');
+  b3 = b3.replace(/\b(up to|max(?:imum)?)\b/ig, '').replace(/\s{2,}/g, ' ').trim();
+  return { bullets: [b1, b2, b3], advice };
+}
+
+function deterministicBullet1(req: SummarizeRequest): string {
+  const { baselines, metrics, evidence } = req;
+  if (evidence.durations_evidence !== 'cookie_table') return 'Cookie lifespans not disclosed in tables.';
+  const parts: string[] = [];
+  if (typeof metrics.ads_p75 === 'number') {
+    const label = labelVsBaseline(metrics.ads_p75, baselines.ads_p75_days);
+    parts.push(`ads p75 ~ ${metrics.ads_p75}d (typical ${baselines.ads_p75_days}d) — ${label}`);
+  }
+  if (typeof metrics.analytics_p75 === 'number') {
+    const label = labelVsBaseline(metrics.analytics_p75, baselines.analytics_p75_days);
+    parts.push(`analytics p75 ~ ${metrics.analytics_p75}d (typical ${baselines.analytics_p75_days}d) — ${label}`);
+  }
+  return parts.length ? `Cookie durations: ${parts.join('; ')}.` : 'Cookie lifespans listed, but no p75 derived.';
+}
+
+function deterministicBullet2(req: SummarizeRequest): string {
+  const { baselines, metrics } = req;
+  const bands = baselines.third_party_bands;
+  if (typeof metrics.third_parties_count !== 'number') return 'Partners not disclosed in tables or text.';
+  const band = bandForThirdParties(metrics.third_parties_count, bands);
+  return `Other companies’ cookies: about ${metrics.third_parties_count} — ${band} for this category.`;
+}
+
+function labelVsBaseline(value: number, baseline: number): 'shorter than typical'|'in line with typical'|'longer than typical' {
+  const ratio = baseline > 0 ? value / baseline : 1;
+  if (ratio < 0.75) return 'shorter than typical';
+  if (ratio > 1.25) return 'longer than typical';
+  return 'in line with typical';
+}
+
+function bandForThirdParties(count: number, bands: { few: number; some: number; many: number }): 'few'|'some'|'many' {
+  if (count <= bands.few) return 'few';
+  if (count <= bands.some) return 'some';
+  return 'many';
 }
