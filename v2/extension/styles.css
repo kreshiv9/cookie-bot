@@ -97,3 +97,22 @@ button:disabled {
 .warn { background: var(--warn); color: #231b06; }
 .risk { background: var(--risk); color: #2e0606; }
 
+.chips { display: flex; gap: 6px; margin: 4px 0 8px 0; flex-wrap: wrap; }
+.chip { padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--text); }
+.chip.ok { background: rgba(16,185,129,0.12); border-color: #064e3b; }
+.chip.warn { background: rgba(245,158,11,0.12); border-color: #78350f; }
+.chip.risk { background: rgba(239,68,68,0.12); border-color: #7f1d1d; }
+
+.headline { margin: 2px 0 6px 0; font-weight: 600; }
+
+#actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+#actions button, #actions a {
+  background: #1f2937;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+  cursor: pointer;
+  text-decoration: none;
+}
+#actions button:hover, #actions a:hover { border-color: #374151; }

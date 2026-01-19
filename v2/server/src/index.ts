@@ -21,7 +21,7 @@ app.post('/api/summarize', async (req, res) => {
     const result = await summarize(parse.data);
     const check = SummarizeResponseSchema.safeParse(result.response);
     if (!check.success) {
-      return res.status(500).json({ error: 'invalid_response_shape' });
+      return res.status(500).json({ error: 'invalid_response_shape', details: check.error.flatten() });
     }
     res.set('x-summarizer-source', result.source);
     if (result.model) res.set('x-summarizer-model', result.model);

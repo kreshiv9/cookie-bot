@@ -55,10 +55,25 @@ export const SummarizeRequestSchema = z.object({
 
 export type SummarizeRequest = z.infer<typeof SummarizeRequestSchema>;
 
+const ChipsSchema = z.object({
+  retention: z.enum(['shorter','typical','longer']),
+  partners: z.enum(['few','some','many']),
+  controls: z.enum(['clear','unclear','poor'])
+});
+
+const ActionSchema = z.object({
+  label: z.string(),
+  type: z.enum(['open_cmp','browser_setting','learn_more']),
+  url: z.string().url().optional()
+});
+
 export const SummarizeResponseSchema = z.object({
+  headline: z.string(),
+  chips: ChipsSchema,
   bullets: z.array(z.string()).length(3),
-  advice: z.string()
+  advice: z.string(),
+  confidence: z.enum(['high','medium','low']),
+  actions: z.array(ActionSchema).optional()
 });
 
 export type SummarizeResponse = z.infer<typeof SummarizeResponseSchema>;
-

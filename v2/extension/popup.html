@@ -22,13 +22,21 @@
         <span id="verdictBadge" class="badge">-</span>
         <span id="scores"></span>
       </div>
+      <div id="chips" class="chips hidden"></div>
+      <div id="headline" class="headline"></div>
       <ul id="bullets" class="bullets"></ul>
       <div id="advice" class="advice"></div>
     </section>
 
+    <section id="actions" class="card hidden"></section>
+
     <details id="details" class="hidden">
       <summary>Show details</summary>
       <div id="detailsContent"></div>
+      <details>
+        <summary>Debug JSON</summary>
+        <pre id="debugJson"></pre>
+      </details>
     </details>
 
     <footer>
@@ -39,4 +47,3 @@
     <script type="module" src="popup.js"></script>
   </body>
   </html>
-

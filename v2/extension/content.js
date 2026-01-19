@@ -72,6 +72,11 @@
       sendResponse({ ok: true });
       return true;
     }
+    if (msg && msg.type === 'cookiebot.openSettings') {
+      const clicked = tryOpenCookieSettings();
+      sendResponse({ ok: clicked });
+      return true;
+    }
     if (msg && msg.type === 'cookiebot.scrape') {
       try {
         const result = {
@@ -87,4 +92,28 @@
       return true;
     }
   });
+
+  function tryOpenCookieSettings() {
+    // Heuristics: click visible elements that likely open cookie preferences.
+    const selectors = [
+      'button', 'a', '[role="button"]', '[class*="cookie"]', '[id*="cookie"]', '[aria-label*="cookie"]',
+      '[data-testid*="cookie"]', '[data-test*="cookie"]'
+    ];
+    const texts = /(cookie|cookies|consent|preferences|settings|manage)/i;
+    const candidates = Array.from(document.querySelectorAll(selectors.join(',')));
+    for (const el of candidates) {
+      const t = (el.textContent || '').trim();
+      const a = (el.getAttribute('aria-label') || '').trim();
+      if ((t && texts.test(t)) || (a && texts.test(a))) {
+        try {
+          el.click();
+          return true;
+        } catch (_) {}
+      }
+    }
+    // Try common CMP globals
+    try { if (typeof window.__tcfapi === 'function') { window.__tcfapi('showUi', 2, ()=>{}); return true; } } catch(_) {}
+    try { if (typeof window.didomiOnReady === 'function' && window.Didomi) { window.Didomi.preferences.show(); return true; } } catch(_) {}
+    return false;
+  }
 })();

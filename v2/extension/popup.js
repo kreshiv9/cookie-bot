@@ -64,6 +64,7 @@ async function onAnalyze() {
 
     let bullets = null, advice = null, usedLocal = false;
     let serverSource = null;
+    let aiShape = null;
     if (API_BASE_URL) {
       setStatus('Contacting summarizer…');
       try {
@@ -75,6 +76,7 @@ async function onAnalyze() {
         if (res.ok) {
           serverSource = res.headers.get('x-summarizer-source');
           const j = await res.json();
+          aiShape = j;
           if (Array.isArray(j.bullets) && j.bullets.length === 3 && typeof j.advice === 'string') {
             bullets = j.bullets;
             advice = j.advice;
@@ -89,7 +91,7 @@ async function onAnalyze() {
       ({ bullets, advice } = localBulletsAdvice({ baselines, metrics, evidence: { durations_evidence, third_parties_evidence }, consent, disclosures }));
     }
 
-    renderResults({ bullets, advice, clarity, safety, verdict: v, usedLocal, serverSource, payload });
+    renderResults({ tabId: tab.id, aiShape, bullets, advice, clarity, safety, verdict: v, usedLocal, serverSource, payload, baselines, metrics, consent, disclosures });
     setStatus('Done');
   } catch (e) {
     setStatus('Error: ' + (e && e.message ? e.message : String(e)));
@@ -200,7 +202,15 @@ function localBulletsAdvice({ baselines, metrics, evidence, consent, disclosures
   return { bullets, advice };
 }
 
-function renderResults({ bullets, advice, clarity, safety, verdict, usedLocal, serverSource, payload }) {
+function chipClass(kind, val) {
+  // Map values to ok/warn/risk
+  if (kind === 'retention') return val === 'shorter' ? 'ok' : (val === 'typical' ? 'ok' : 'warn');
+  if (kind === 'partners') return val === 'few' ? 'ok' : (val === 'some' ? 'warn' : 'risk');
+  if (kind === 'controls') return val === 'clear' ? 'ok' : (val === 'unclear' ? 'warn' : 'risk');
+  return '';
+}
+
+function renderResults({ tabId, aiShape, bullets, advice, clarity, safety, verdict, usedLocal, serverSource, payload, baselines, metrics, consent, disclosures }) {
   const vb = el('#verdictBadge');
   vb.textContent = verdict.replace('_', ' ');
   vb.classList.remove('ok','warn','risk');
@@ -208,6 +218,29 @@ function renderResults({ bullets, advice, clarity, safety, verdict, usedLocal, s
   else if (verdict === 'CAUTION') vb.classList.add('warn');
   else vb.classList.add('risk');
   el('#scores').textContent = `Clarity ${clarity}/100 · Safety ${safety}/100`;
+  // Chips + headline
+  const chipsEl = el('#chips');
+  chipsEl.innerHTML = '';
+  let headlineText = '';
+  if (aiShape && aiShape.chips) {
+    const entries = [
+      ['retention', aiShape.chips.retention],
+      ['partners', aiShape.chips.partners],
+      ['controls', aiShape.chips.controls]
+    ];
+    for (const [k, v] of entries) {
+      if (!v) continue;
+      const span = document.createElement('span');
+      span.className = 'chip ' + chipClass(k, v);
+      span.textContent = `${k}: ${v}`;
+      chipsEl.appendChild(span);
+    }
+    chipsEl.classList.remove('hidden');
+    if (aiShape.headline) headlineText = aiShape.headline;
+  } else {
+    chipsEl.classList.add('hidden');
+  }
+  el('#headline').textContent = headlineText;
   const ul = el('#bullets');
   ul.innerHTML = '';
   bullets.forEach(b => {
@@ -217,12 +250,61 @@ function renderResults({ bullets, advice, clarity, safety, verdict, usedLocal, s
   });
   el('#advice').textContent = advice || '';
   el('#summary').classList.remove('hidden');
+  // Actions
+  const actionsEl = el('#actions');
+  actionsEl.innerHTML = '';
+  if (aiShape && Array.isArray(aiShape.actions)) {
+    aiShape.actions.forEach(act => {
+      if (act.type === 'open_cmp') {
+        const btn = document.createElement('button');
+        btn.textContent = act.label || 'Open cookie settings';
+        btn.addEventListener('click', async () => {
+          setStatus('Opening cookie settings…');
+          const ok = await new Promise((resolve) => {
+            chrome.tabs.sendMessage(tabId, { type: 'cookiebot.openSettings' }, (resp) => {
+              resolve(resp && resp.ok);
+            });
+          });
+          setStatus(ok ? 'Cookie settings opened (if detected).' : 'Could not find cookie settings on this page.');
+        });
+        actionsEl.appendChild(btn);
+      } else if (act.type === 'browser_setting') {
+        const btn = document.createElement('button');
+        btn.textContent = act.label || 'Browser cookie settings';
+        btn.addEventListener('click', async () => {
+          try { await chrome.tabs.create({ url: 'chrome://settings/cookies' }); }
+          catch (_) { await chrome.tabs.create({ url: 'https://support.google.com/chrome/answer/95647' }); }
+        });
+        actionsEl.appendChild(btn);
+      } else if (act.type === 'learn_more' && act.url) {
+        const a = document.createElement('a');
+        a.href = act.url;
+        a.target = '_blank';
+        a.rel = 'noreferrer';
+        a.textContent = act.label || 'Learn more';
+        actionsEl.appendChild(a);
+      }
+    });
+    actionsEl.classList.remove('hidden');
+  } else {
+    actionsEl.classList.add('hidden');
+  }
   el('#details').classList.remove('hidden');
-  const pre = document.createElement('pre');
-  pre.textContent = JSON.stringify(payload, null, 2);
+  // Friendly details
   const dc = el('#detailsContent');
   dc.innerHTML = '';
-  dc.appendChild(pre);
+  const list = document.createElement('div');
+  list.innerHTML = `
+    <div><strong>Confidence:</strong> ${aiShape && aiShape.confidence ? aiShape.confidence : 'unknown'}</div>
+    <div><strong>Baselines:</strong> ads ${baselines.ads_p75_days}d; analytics ${baselines.analytics_p75_days}d; bands few/some/many = ${baselines.third_party_bands.few}/${baselines.third_party_bands.some}/${baselines.third_party_bands.many}</div>
+    <div><strong>Metrics:</strong> ads_p75=${metrics.ads_p75 ?? 'n/a'}d; analytics_p75=${metrics.analytics_p75 ?? 'n/a'}d; partners=${metrics.third_parties_count ?? 'n/a'}; very_long>${'730d'} count=${metrics.very_long_count}</div>
+    <div><strong>Evidence:</strong> durations=${payload.evidence.durations_evidence}; partners=${payload.evidence.third_parties_evidence}</div>
+    <div><strong>Consent:</strong> choices=${payload.consent.has_category_choices}; reject_non_essential=${payload.consent.reject_non_essential}</div>
+    <div><strong>Disclosures:</strong> rights=${payload.disclosures.rights_listed}; contact=${payload.disclosures.contact_present}; retention=${payload.disclosures.pd_retention_present}; last_updated=${payload.disclosures.last_updated_present}</div>
+  `;
+  dc.appendChild(list);
+  // Debug JSON
+  el('#debugJson').textContent = JSON.stringify(payload, null, 2);
   let cloudLabel = 'local';
   if (API_BASE_URL) {
     if (usedLocal) cloudLabel = 'cloud (offline)';
