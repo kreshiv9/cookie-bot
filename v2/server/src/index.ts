@@ -1,18 +1,31 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
+import rateLimit from 'express-rate-limit';
 import { SummarizeRequestSchema, SummarizeResponseSchema } from './validation';
 import { summarize } from './ai';
 
 const app = express();
-app.use(cors());
+// CORS configuration: allow specific origins if provided
+const allowed = (process.env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean);
+if (allowed.length > 0) {
+  app.use(cors({ origin: (origin, cb) => {
+    if (!origin) return cb(null, true);
+    if (allowed.includes(origin)) return cb(null, true);
+    return cb(new Error('Not allowed by CORS'));
+  }}));
+} else {
+  app.use(cors());
+}
 app.use(express.json({ limit: '256kb' }));
+// Basic rate limiting for summarize endpoint
+const limiter = rateLimit({ windowMs: 60_000, max: process.env.RATE_LIMIT_PER_MIN ? Number(process.env.RATE_LIMIT_PER_MIN) : 60 });
 
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, aiConfigured: Boolean(process.env.GROQ_API_KEY), model: process.env.GROQ_MODEL || 'llama-3.1-8b-instant' });
 });
 
-app.post('/api/summarize', async (req, res) => {
+app.post('/api/summarize', limiter, async (req, res) => {
   const parse = SummarizeRequestSchema.safeParse(req.body);
   if (!parse.success) {
     return res.status(400).json({ error: 'invalid_request', details: parse.error.flatten() });

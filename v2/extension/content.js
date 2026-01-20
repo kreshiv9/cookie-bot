@@ -12,6 +12,51 @@
   }
 
   function findPolicyLinks() {
+    const popupLinks = findPopupPolicyLinks(); // [{url, text}]
+    const pageLinks = findPagePolicyLinks();   // [{url, text}]
+    const all = [
+      ...popupLinks.map(u => ({ url: u.url, text: u.text, source: 'popup' })),
+      ...pageLinks.map(u => ({ url: u.url, text: u.text, source: 'page' }))
+    ];
+    const seen = new Set();
+    const dedup = [];
+    for (const item of all) {
+      if (!item.url || typeof item.url !== 'string') continue;
+      if (seen.has(item.url)) continue;
+      seen.add(item.url);
+      dedup.push(item);
+      if (dedup.length >= 10) break;
+    }
+    return dedup;
+  }
+
+  function isVisible(el) {
+    const rect = el.getBoundingClientRect();
+    const style = window.getComputedStyle(el);
+    return !!(rect.width && rect.height) && style.visibility !== 'hidden' && style.display !== 'none';
+  }
+
+  function findPopupPolicyLinks() {
+    const containers = Array.from(document.querySelectorAll('[role="dialog"], [aria-modal="true"], .modal, .overlay, .cmp, .consent, .cookie'))
+      .filter(isVisible)
+      .slice(0, 5);
+    const links = [];
+    for (const c of containers) {
+      const anchors = Array.from(c.querySelectorAll('a[href]'));
+      for (const a of anchors) {
+        const text = (a.textContent || '').trim();
+        const t = text.toLowerCase();
+        const h = (a.getAttribute('href') || '').toLowerCase();
+        if (SELECTOR_HINTS.some(k => t.includes(k) || h.includes(k))) {
+          const u = absoluteUrl(a.getAttribute('href'));
+          if (u) links.push({ url: u, text });
+        }
+      }
+    }
+    return links;
+  }
+
+  function findPagePolicyLinks() {
     const anchors = Array.from(document.querySelectorAll('a[href]'));
     const links = anchors
       .filter(a => {
@@ -19,9 +64,9 @@
         const h = (a.getAttribute('href') || '').toLowerCase();
         return SELECTOR_HINTS.some(k => t.includes(k) || h.includes(k));
       })
-      .map(a => absoluteUrl(a.getAttribute('href')))
-      .filter(Boolean);
-    return Array.from(new Set(links)).slice(0, 10);
+      .map(a => ({ url: absoluteUrl(a.getAttribute('href')), text: (a.textContent || '').trim() }))
+      .filter(x => Boolean(x.url));
+    return links;
   }
 
   function readableText() {
@@ -79,9 +124,11 @@
     }
     if (msg && msg.type === 'cookiebot.scrape') {
       try {
+        const linksMeta = findPolicyLinks();
         const result = {
           url: location.href,
-          policyLinks: findPolicyLinks(),
+          policyLinks: linksMeta.map(x => x.url),
+          policyLinksMeta: linksMeta,
           readableText: readableText(),
           cookieRows: parseCookieTables()
         };

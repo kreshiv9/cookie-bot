@@ -16,15 +16,18 @@ export async function summarize(req: SummarizeRequest): Promise<SummarizeResult>
 
   try {
     const groq = new Groq({ apiKey });
-    const completion = await groq.chat.completions.create({
-      model,
-      temperature: 0.1,
-      response_format: { type: 'json_object' },
-      messages: [
-        { role: 'system', content: system },
-        { role: 'user', content: user }
-      ]
-    });
+    const completion = await withTimeout(
+      groq.chat.completions.create({
+        model,
+        temperature: 0.1,
+        response_format: { type: 'json_object' },
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: user }
+        ]
+      }),
+      12000
+    );
     const content = completion.choices?.[0]?.message?.content || '';
     const parsed = JSON.parse(content);
     // Basic shape check will be completed after sanitization
@@ -128,11 +131,13 @@ function computeChips(req: SummarizeRequest) {
   const labels: Array<'shorter'|'typical'|'longer'> = [];
   if (typeof metrics.ads_p75 === 'number') labels.push(mapLabel(labelVsBaseline(metrics.ads_p75, baselines.ads_p75_days)));
   if (typeof metrics.analytics_p75 === 'number') labels.push(mapLabel(labelVsBaseline(metrics.analytics_p75, baselines.analytics_p75_days)));
-  const retention = pickWorst(labels) || 'typical';
-  const partners = bandForThirdParties(typeof metrics.third_parties_count === 'number' ? metrics.third_parties_count : Number.MAX_SAFE_INTEGER, baselines.third_party_bands);
+  const retention = pickWorst(labels) || 'unknown';
+  const partners = (typeof metrics.third_parties_count === 'number')
+    ? bandForThirdParties(metrics.third_parties_count, baselines.third_party_bands)
+    : 'unknown';
   const controls: 'clear'|'unclear'|'poor' = consent.has_category_choices && consent.reject_non_essential === 'yes' ? 'clear'
     : (consent.has_category_choices || consent.reject_non_essential === 'unclear') ? 'unclear' : 'poor';
-  return { retention, partners, controls };
+  return { retention, partners, controls } as any;
 }
 
 function mapLabel(x: 'shorter than typical'|'in line with typical'|'longer than typical'): 'shorter'|'typical'|'longer' {
@@ -160,6 +165,10 @@ function computeConfidence(req: SummarizeRequest): 'high'|'medium'|'low' {
 function buildHeadline(req: SummarizeRequest, chips: { retention: string; partners: string; controls: string }) {
   const verdict = req.deterministic.verdict === 'LIKELY_OK' ? 'Likely OK' : (req.deterministic.verdict === 'CAUTION' ? 'Caution' : 'High Risk');
   const site = req.siteType.replace('_','/');
+  const missingEvidence = req.evidence.durations_evidence !== 'cookie_table' || typeof req.metrics.third_parties_count !== 'number';
+  if (verdict === 'Caution' && missingEvidence) {
+    return `Caution for ${site}: missing policy evidence`;
+  }
   return `${verdict} for ${site}: ${chips.partners} partners, ${chips.controls} controls`;
 }
 
@@ -180,4 +189,11 @@ function buildActions(req: SummarizeRequest) {
   actions.push({ label: 'Manage browser cookie settings', type: 'browser_setting' });
   actions.push({ label: 'Learn about managing cookies (Chrome)', type: 'learn_more', url: 'https://support.google.com/chrome/answer/95647' });
   return actions;
+}
+
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error('ai_timeout')), ms);
+    p.then(v => { clearTimeout(t); resolve(v); }, err => { clearTimeout(t); reject(err); });
+  });
 }

@@ -1,5 +1,5 @@
 import { API_BASE_URL } from './config.js';
-import { baselinesForSite, DEFAULT_SITE_TYPE } from './lib/baselines.js';
+import { baselinesForSite } from './lib/baselines.js';
 import { computeMetricsFromScrape, getETLDPlusOne, readabilityScore } from './lib/parse.js';
 import { scoreClarity, scoreSafety, verdict } from './lib/scoring.js';
 
@@ -27,32 +27,46 @@ async function onAnalyze() {
     }
     await ensureContentScript(tab.id);
     const scrape = await requestScrape(tab.id);
-    const policyText = await fetchPolicyText(scrape.policyLinks);
+    // Request host permissions for current site and policy links (for cookies + background fetch)
+    const rankedUrls = rankPolicyLinks(scrape.policyLinksMeta || [], new URL(scrape.url));
+    const originPermsGranted = await requestHostPermissions(scrape.url, rankedUrls);
+    const policyFetch = originPermsGranted ? await fetchPolicyText(rankedUrls.slice(0, 3)) : { ok: false, error: 'no_permission', attempts: [] };
+    const policyText = policyFetch.text || '';
     const siteDomain = getETLDPlusOne(new URL(scrape.url).hostname);
 
     setStatus('Collecting cookies…');
-    const cookies = await chrome.cookies.getAll({ domain: siteDomain });
+    const cookies = originPermsGranted ? await chrome.cookies.getAll({ domain: siteDomain }) : [];
     const topDomains = summarizeTopDomains(cookies, siteDomain).slice(0, 3);
 
     setStatus('Computing metrics…');
     const { metrics, domains } = computeMetricsFromScrape({ cookieRows: scrape.cookieRows, siteDomain });
-    const baselines = baselinesForSite(DEFAULT_SITE_TYPE);
-
-    const durations_evidence = scrape.cookieRows && scrape.cookieRows.length ? 'cookie_table' : 'none';
-    const third_parties_evidence = domains.third_party_domains.length ? 'cookie_table' : (scrape.readableText.toLowerCase().includes('third party') ? 'policy_text' : 'none');
-    const lifespans_disclosed = durations_evidence === 'cookie_table' && scrape.cookieRows.some(r => r.expiryText && r.expiryText.trim());
+    // Fallback partners from browser cookies if tables are missing
+    if (metrics.third_parties_count == null) {
+      metrics.third_parties_count = (topDomains || []).length || null;
+    }
 
     const combinedText = [scrape.readableText || '', policyText || ''].join(' ').trim();
+    const siteType = detectSiteType(new URL(scrape.url), combinedText);
+    const baselines = baselinesForSite(siteType);
+
+    const durations_evidence = scrape.cookieRows && scrape.cookieRows.length ? 'cookie_table' : 'none';
+    const third_parties_evidence = (domains.third_party_domains && domains.third_party_domains.length) ? 'cookie_table' : (combinedText.toLowerCase().includes('third party') ? 'policy_text' : 'none');
+    const lifespans_disclosed = durations_evidence === 'cookie_table' && scrape.cookieRows.some(r => r.expiryText && r.expiryText.trim());
     const disclosures = detectDisclosures(combinedText);
     const consent = detectConsent(combinedText);
     const readability = readabilityScore(combinedText);
     const clarity = scoreClarity({ disclosures, consent, lifespans_disclosed, readability });
     const safety = scoreSafety({ metrics, consent }, baselines);
-    const v = verdict(clarity, safety);
+    const hasPolicyText = combinedText && combinedText.length > 200;
+    const hasDurations = durations_evidence === 'cookie_table' && (typeof metrics.ads_p75 === 'number' || typeof metrics.analytics_p75 === 'number');
+    const hasPartners = typeof metrics.third_parties_count === 'number';
+    const evidenceComplete = hasDurations && hasPartners;
+    const vBase = verdict(clarity, safety);
+    const v = evidenceComplete ? vBase : 'CAUTION';
 
-    const deterministic = { clarity, safety, verdict: v };
+    const deterministic = { clarity: clarity, safety: safety, verdict: v };
     const payload = {
-      siteType: DEFAULT_SITE_TYPE,
+      siteType,
       baselines,
       metrics,
       evidence: { durations_evidence, third_parties_evidence },
@@ -91,7 +105,7 @@ async function onAnalyze() {
       ({ bullets, advice } = localBulletsAdvice({ baselines, metrics, evidence: { durations_evidence, third_parties_evidence }, consent, disclosures }));
     }
 
-    renderResults({ tabId: tab.id, aiShape, bullets, advice, clarity, safety, verdict: v, usedLocal, serverSource, payload, baselines, metrics, consent, disclosures });
+    renderResults({ tabId: tab.id, aiShape, bullets, advice, clarity, safety, verdict: v, usedLocal, serverSource, payload, baselines, metrics, consent, disclosures, evidenceComplete, hasDurations, hasPartners, hasPolicyText, policyFetch, policyLinksMeta: scrape.policyLinksMeta });
     setStatus('Done');
   } catch (e) {
     setStatus('Error: ' + (e && e.message ? e.message : String(e)));
@@ -130,14 +144,70 @@ async function ensureContentScript(tabId) {
   await new Promise(r => setTimeout(r, 50));
 }
 
+async function requestHostPermissions(pageUrl, policyLinks) {
+  try {
+    const url = new URL(pageUrl);
+    const siteDomain = getETLDPlusOne(url.hostname);
+    const origins = new Set();
+    origins.add(`*://*.${siteDomain}/*`);
+    for (const href of (policyLinks || [])) {
+      try {
+        const u = new URL(href);
+        const d = getETLDPlusOne(u.hostname);
+        origins.add(`*://*.${d}/*`);
+      } catch {}
+    }
+    const toRequest = Array.from(origins);
+    if (!toRequest.length) return true;
+    const granted = await new Promise(resolve => {
+      chrome.permissions.request({ origins: toRequest }, granted => resolve(Boolean(granted)));
+    });
+    return Boolean(granted);
+  } catch { return false; }
+}
+
 function fetchPolicyText(urls) {
   return new Promise((resolve) => {
-    if (!Array.isArray(urls) || urls.length === 0) return resolve('');
+    if (!Array.isArray(urls) || urls.length === 0) return resolve({ ok: false, error: 'no_links', attempts: [] });
     chrome.runtime.sendMessage({ type: 'cookiebot.fetchPolicyText', urls }, (resp) => {
-      if (!resp || !resp.ok) return resolve('');
-      resolve(resp.text || '');
+      if (!resp || !resp.ok) return resolve({ ok: false, error: resp && resp.error || 'fetch_failed', attempts: resp && resp.attempts || [] });
+      resolve({ ok: true, url: resp.url, text: resp.text, length: resp.length, contentType: resp.contentType, attempts: resp.attempts || [] });
     });
   });
+}
+
+function rankPolicyLinks(metaList, pageUrlObj) {
+  const pageHost = (pageUrlObj && pageUrlObj.hostname || '').toLowerCase();
+  const pageETLD = getETLDPlusOne(pageHost);
+  function isHttpUrl(u) { try { const p = new URL(u); return p.protocol === 'http:' || p.protocol === 'https:'; } catch { return false; } }
+  function score(item) {
+    const url = item.url || '';
+    const text = (item.text || '').toLowerCase();
+    let s = 0;
+    const u = new URL(url);
+    const host = u.hostname.toLowerCase();
+    const path = (u.pathname || '').toLowerCase();
+    // Positive terms
+    if (/cookie/.test(text) || /cookie/.test(path)) s += 50; // cookie policy tends to have tables
+    if (/privacy/.test(text) || /privacy/.test(path)) s += 40;
+    if (/policy/.test(text) || /policy/.test(path)) s += 10;
+    if (/your privacy choices|do not sell|do not share/.test(text)) s += 10;
+    // Negative terms
+    if (/shipping|returns|delivery|warranty|terms|conditions/.test(text) || /shipping|returns|delivery|warranty|terms|conditions/.test(path)) s -= 80;
+    if (/onetrust\.com\/products/.test(url)) s -= 50; // vendor marketing
+    // Anchors are lower priority than base page
+    if (u.hash) s -= 5;
+    // Prefer same eTLD+1 or a corporate privacy host over third-party marketing
+    const hostETLD = getETLDPlusOne(host);
+    if (hostETLD === pageETLD) s += 15;
+    if (/privacy|policy/.test(host)) s += 5; // e.g., versantprivacy.com
+    // Source weighting: popup links > page links
+    if (item.source === 'popup') s += 20;
+    return s;
+  }
+  const filtered = (metaList || []).filter(it => typeof it.url === 'string' && isHttpUrl(it.url));
+  const sorted = [...filtered].sort((a,b) => score(b) - score(a));
+  return sorted.map(x => x.url);
 }
 
 function summarizeTopDomains(cookies, siteDomain) {
@@ -168,6 +238,21 @@ function detectConsent(text) {
                : /(accept all|allow all)/.test(t) ? 'no'
                : 'unclear';
   return { has_category_choices: hasChoices, reject_non_essential: reject };
+}
+
+function detectSiteType(urlObj, text) {
+  try {
+    const host = (urlObj.hostname || '').toLowerCase();
+    const t = (text || '').toLowerCase();
+    if (/\.gov|\.gov\.|\.mil/.test(host) || /government|public sector/.test(t)) return 'gov_ngo';
+    if (/health|clinic|hospital|pharmacy|insurance|bank|finance/.test(host) || /health|medical|banking|financial/.test(t)) return 'finance_health';
+    if (/news|media|press|cnn|bbc|cnbc|nytimes|guardian|forbes|bloomberg/.test(host) || /breaking news|newsletter|article/.test(t)) return 'news';
+    if (/shop|store|retail|cart|checkout/.test(host) || /cart|checkout|returns|shipping/.test(t)) return 'retail';
+    if (/app|saas|cloud|api/.test(host) || /subscription|workspace|dashboard/.test(t)) return 'saas';
+    return 'retail';
+  } catch {
+    return 'retail';
+  }
 }
 
 function localBulletsAdvice({ baselines, metrics, evidence, consent, disclosures }) {
@@ -204,20 +289,28 @@ function localBulletsAdvice({ baselines, metrics, evidence, consent, disclosures
 
 function chipClass(kind, val) {
   // Map values to ok/warn/risk
+  if (val === 'unknown') return '';
   if (kind === 'retention') return val === 'shorter' ? 'ok' : (val === 'typical' ? 'ok' : 'warn');
   if (kind === 'partners') return val === 'few' ? 'ok' : (val === 'some' ? 'warn' : 'risk');
   if (kind === 'controls') return val === 'clear' ? 'ok' : (val === 'unclear' ? 'warn' : 'risk');
   return '';
 }
 
-function renderResults({ tabId, aiShape, bullets, advice, clarity, safety, verdict, usedLocal, serverSource, payload, baselines, metrics, consent, disclosures }) {
+function combinedScoreText(label, value, hasPolicyText) {
+  if (!hasPolicyText || value == null) return `${label}: unknown`;
+  return `${label} ${value}/100`;
+}
+
+function renderResults({ tabId, aiShape, bullets, advice, clarity, safety, verdict, usedLocal, serverSource, payload, baselines, metrics, consent, disclosures, evidenceComplete, hasDurations, hasPartners, hasPolicyText, policyFetch, policyLinksMeta }) {
   const vb = el('#verdictBadge');
   vb.textContent = verdict.replace('_', ' ');
   vb.classList.remove('ok','warn','risk');
   if (verdict === 'LIKELY_OK') vb.classList.add('ok');
   else if (verdict === 'CAUTION') vb.classList.add('warn');
   else vb.classList.add('risk');
-  el('#scores').textContent = `Clarity ${clarity}/100 · Safety ${safety}/100`;
+  const clarityText = combinedScoreText('Clarity', clarity, !!hasPolicyText);
+  const safetyText = evidenceComplete ? `Safety ${safety}/100` : 'Safety: unknown';
+  el('#scores').textContent = `${clarityText} · ${safetyText}`;
   // Chips + headline
   const chipsEl = el('#chips');
   chipsEl.innerHTML = '';
@@ -289,6 +382,17 @@ function renderResults({ tabId, aiShape, bullets, advice, clarity, safety, verdi
   } else {
     actionsEl.classList.add('hidden');
   }
+  // Always offer to open detected privacy policy if available
+  const bestPolicyUrl = (policyFetch && policyFetch.url) || ((policyLinksMeta && policyLinksMeta[0] && policyLinksMeta[0].url) || null);
+  if (bestPolicyUrl) {
+    const a = document.createElement('a');
+    a.href = bestPolicyUrl;
+    a.target = '_blank';
+    a.rel = 'noreferrer';
+    a.textContent = 'Open privacy policy';
+    actionsEl.appendChild(a);
+    actionsEl.classList.remove('hidden');
+  }
   el('#details').classList.remove('hidden');
   // Friendly details
   const dc = el('#detailsContent');
@@ -305,6 +409,12 @@ function renderResults({ tabId, aiShape, bullets, advice, clarity, safety, verdi
   dc.appendChild(list);
   // Debug JSON
   el('#debugJson').textContent = JSON.stringify(payload, null, 2);
+  // Policy fetch debug
+  const pDbg = el('#policyDebug');
+  const linkList = (policyLinksMeta || []).map(l => `${l.source}: ${l.url}`).join('\n');
+  const attempts = (policyFetch && policyFetch.attempts ? policyFetch.attempts : []).map(a => `${a.url} → ok=${a.ok||false} status=${a.status||0} ct=${a.contentType||''} len=${a.length||0} ${a.reason||''}`).join('\n');
+  const errLine = policyFetch && policyFetch.ok === false && policyFetch.error ? `Error: ${policyFetch.error}` : '';
+  pDbg.textContent = `Found links:\n${linkList || 'none'}\n\nChosen: ${policyFetch && policyFetch.url ? policyFetch.url : 'n/a'} (len=${policyFetch && policyFetch.length || 0})\n${errLine ? errLine + '\n' : ''}\nAttempts:\n${attempts || 'none'}`;
   let cloudLabel = 'local';
   if (API_BASE_URL) {
     if (usedLocal) cloudLabel = 'cloud (offline)';

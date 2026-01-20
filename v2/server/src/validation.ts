@@ -56,9 +56,9 @@ export const SummarizeRequestSchema = z.object({
 export type SummarizeRequest = z.infer<typeof SummarizeRequestSchema>;
 
 const ChipsSchema = z.object({
-  retention: z.enum(['shorter','typical','longer']),
-  partners: z.enum(['few','some','many']),
-  controls: z.enum(['clear','unclear','poor'])
+  retention: z.enum(['shorter','typical','longer','unknown']),
+  partners: z.enum(['few','some','many','unknown']),
+  controls: z.enum(['clear','unclear','poor','unknown'])
 });
 
 const ActionSchema = z.object({
